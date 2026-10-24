@@ -1,0 +1,62 @@
+# Builds the Mac and Windows apps for a version tag (npm version …, then git push --follow-tags) and publishes them as
+# a GitHub release. The apps look at the newest release for updates, so it stays a draft until every file is there.
+# The tag's message becomes the release notes, shown in the app under ⋯ › About & updates.
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+env:
+  GH_TOKEN: ${{ github.token }}
+  TAG: ${{ github.ref_name }}
+
+jobs:
+  draft:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: |
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          git tag -l --format='%(contents)' "$TAG" > notes.md
+          gh release create "$TAG" --draft --title "DriveDesk ${TAG#v}" --notes-file notes.md
+
+  build:
+    needs: draft
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            target: --mac
+          - os: windows-latest
+            target: --win --x64
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: 1 # electron-builder fetches its own copy for each platform
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 26
+          cache: npm
+      - run: npm ci
+      - if: runner.os == 'Windows' # npm runs scripts with cmd.exe there; desktop:server is written for bash
+        run: npm config set script-shell "C:\\Program Files\\Git\\bin\\bash.exe"
+      - run: npm test
+      - run: |
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          git tag -l --format='%(contents)' "$TAG" > build/release-notes.md
+      - run: npm run desktop:server
+      - run: npx electron-builder ${{ matrix.target }} --publish never
+      - run: |
+          shopt -s nullglob
+          gh release upload "$TAG" dist/*.dmg dist/*.zip dist/*.exe dist/latest*.yml --clobber
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest

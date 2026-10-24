@@ -1,0 +1,107 @@
+{
+  "name": "drivedesk",
+  "version": "1.0.0",
+  "author": "PCOM Placement Committee",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -H 127.0.0.1",
+    "build": "next build",
+    "start": "next start -H 127.0.0.1",
+    "test": "node --test test/",
+    "start:team": "next start -H 0.0.0.0",
+    "desktop:server": "NEXT_DIST=.next-desktop next build && cp -R .next-desktop/static .next-desktop/standalone/.next-desktop/",
+    "desktop": "npm run desktop:server && env -u ELECTRON_RUN_AS_NODE electron .",
+    "desktop:mac": "npm run desktop:server && electron-builder --mac"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "@types/react": "^19.3.0",
+    "electron": "^45.0.0",
+    "electron-builder": "^26.18.0",
+    "next": "^16.4.2",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "read-excel-file": "^9.3.12",
+    "typescript": "^7.0.2"
+  },
+  "type": "module",
+  "allowScripts": {
+    "electron-winstaller": false
+  },
+  "description": "DriveDesk: run campus interview drives",
+  "main": "electron/main.js",
+  "build": {
+    "appId": "in.pcom.drivedesk",
+    "productName": "DriveDesk",
+    "files": [
+      "electron/main.js",
+      "electron/preload.cjs",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": ".next-desktop/standalone",
+        "to": "server"
+      }
+    ],
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "category": "public.app-category.productivity",
+      "identity": "-",
+      "hardenedRuntime": false,
+      "artifactName": "DriveDesk-mac.${ext}"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "afterPack": "electron/after-pack.cjs",
+    "dmg": {
+      "title": "DriveDesk",
+      "window": {
+        "width": 540,
+        "height": 380
+      },
+      "contents": [
+        {
+          "x": 140,
+          "y": 196
+        },
+        {
+          "x": 400,
+          "y": 196,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    },
+    "nsis": {
+      "artifactName": "DriveDesk-windows-setup.${ext}",
+      "shortcutName": "DriveDesk"
+    },
+    "publish": {
+      "provider": "generic",
+      "url": "https://github.com/InvisibleOS/DriveDesk/releases/latest/download"
+    }
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.11"
+  },
+  "repository": "github:InvisibleOS/DriveDesk"
+}
