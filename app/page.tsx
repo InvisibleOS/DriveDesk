@@ -25,9 +25,7 @@ export default function Dashboard() {
   for (const s of list) byDate.set(s.date, [...(byDate.get(s.date) ?? []), s]);
   const live = list.filter(s => s.status === 'live');
   const inMonth = list.filter(s => s.date.startsWith(month));
-  // students saved before every student needed a campus count in the total but in neither campus
-  const noCampus = inMonth.reduce((a, s) => a + s.students - s.blr - s.mpl, 0);
-  const total = (k: 'students' | 'blrSelected' | 'blr' | 'mpl') => inMonth.reduce((a, s) => a + s[k], 0);
+  const total = (k: 'students' | 'blrSelected') => inMonth.reduce((a, s) => a + s[k], 0);
   // today also lists drives from earlier days that are still open (running, or never set up), so they are one click away
   const earlier = sel === today ? list.filter(s => s.date < today && s.status !== 'done') : [];
   const dayDrives = [...earlier, ...(byDate.get(sel) ?? [])];
@@ -47,7 +45,7 @@ export default function Dashboard() {
           </div>
           <div className="stats">
             <div className="stat"><span>Drives in {monthName(month).split(' ')[0]}</span><b>{inMonth.length}<small>{inMonth.filter(s => s.status === 'live').length} in progress</small></b></div>
-            <div className="stat"><span>Students</span><b>{total('students')}<small>{total('blr')} BLR · {total('mpl')} MPL{noCampus > 0 && ` · ${noCampus} no campus`}</small></b></div>
+            <div className="stat"><span>Students</span><b>{total('students')}</b></div>
             <div className="stat ok"><span>BLR selected</span><b>{total('blrSelected')}<small>this month</small></b></div>
             <div className="stat"><span>All drives</span><b>{list.length}<small>since you started</small></b></div>
           </div>
