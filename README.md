@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset=".github/banner-dark.png">
-    <img src=".github/banner-light.png" alt="DriveDesk: interview drives, without the chaos" width="880">
+    <img src=".github/banner-light.png" alt="DriveDesk: placement drives, without the chaos" width="880">
   </picture>
 </p>
 

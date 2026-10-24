@@ -136,7 +136,7 @@ function SignIn() {
       <section className="land-intro">
         <div className="land-brand"><Logo s={30} /><Wordmark /></div>
         <div className="land-copy">
-          <h1>Interview drives, <em>without the chaos</em>.</h1>
+          <h1>Placement drives, <em>without the chaos</em>.</h1>
           <p>Cabins, queues, attendance and results for the placement committee, live on every laptop and saved even when the Wi-Fi isn&rsquo;t.</p>
         </div>
       </section>
