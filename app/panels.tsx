@@ -205,56 +205,150 @@ export function Setup({ d, send }: { d: Drive; send: Send }) {
 const mins = (ms: number) => ms ? `${Math.max(1, Math.round(ms / 60000))} min` : '—';
 const avg = (ms: number[]) => ms.length ? ms.reduce((a, b) => a + b) / ms.length : 0;
 
-// An ended drive at a glance: how each campus did, each round, and each cabin.
+const hm = (ms: number) => { const m = Math.round(ms / 60000); return m >= 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${Math.max(1, m)} min` };
+const pct = (a: number, b: number) => b ? `${Math.round(a * 100 / b)}%` : '—';
+const CAMPUS_ORDER: Campus[] = ['BLR', 'MPL', '']; // Bangalore first: it is the committee's own campus
+
+// The report of an ended drive: headline numbers, who was selected, how Bangalore did, then campus, round and cabin detail.
 export function Summary({ d }: { d: Drive }) {
   type S = Drive['students'][number];
   const count = (f: (s: S) => boolean) => d.students.filter(f).length;
-  const campus = (c: Campus | null) => [(s: S) => !!s, (s: S) => s.status !== 'absent', (s: S) => s.status === 'selected', (s: S) => s.status === 'rejected']
-    .map(f => count(s => (c === null || s.campus === c) && f(s))); // null: everyone
+  const byCampus = (a: S, b: S) => CAMPUS_ORDER.indexOf(a.campus) - CAMPUS_ORDER.indexOf(b.campus) || a.name.localeCompare(b.name);
+  const present = d.students.filter(s => s.status !== 'absent');
   const held = d.students.flatMap(s => s.hist).filter(h => h.res === 'done'); // interviews that finished normally
-  const time = (f: (h: (typeof held)[number]) => boolean) => mins(avg(held.filter(h => f(h) && h.in && h.out).map(h => h.out! - h.in!)));
+  const timed = held.filter(h => h.in && h.out);
+  const time = (f: (h: (typeof held)[number]) => boolean) => mins(avg(timed.filter(f).map(h => h.out! - h.in!)));
+  const picked = d.students.filter(s => s.status === 'selected').sort(byCampus);
+  const blr = d.students.filter(s => s.campus === 'BLR');
+  const blrIn = blr.filter(s => s.status !== 'absent');
+  const blrPicked = picked.filter(s => s.campus === 'BLR').length;
+  const last = (s: S) => [...s.hist].reverse().find(h => h.res === 'done'); // the final interview, the one that ended in an offer
+  const panel = (room?: string) => d.rooms.find(r => r.name === room)?.panel;
+  const start = d.attendance || d.startedAt; // interviews start once attendance is taken
+  const waits = present.map(s => s.hist[0]?.call).filter((t): t is number => !!t && t > start).map(t => t - start);
+  const absent = d.students.filter(s => s.status === 'absent').sort(byCampus);
+  const open = d.students.filter(s => ['waiting', 'in', 'pending'].includes(s.status)).sort(byCampus); // still in the process when the drive ended
+  const cleared = (s: S) => Math.max(0, s.status === 'rejected' || s.status === 'pending' ? s.done - 1 : s.done); // the last round's result counts only once it is known and positive
+  const blrOthers = blr.filter(s => s.status !== 'selected' && s.status !== 'absent').sort((a, b) => cleared(b) - cleared(a) || a.name.localeCompare(b.name));
+  const campusRow = (c: Campus | null) => {
+    const in_ = (s: S) => c === null || s.campus === c;
+    const all = count(in_), here = count(s => in_(s) && s.status !== 'absent'), sel = count(s => in_(s) && s.status === 'selected');
+    return [all, here, sel, count(s => in_(s) && s.status === 'rejected'), pct(sel, here)];
+  };
+  const Who = ({ s }: { s: S }) => <><span className="name">{s.name}</span>{s.reg && <span className="reg"> {s.reg}</span>}</>;
   return (
     <div className="summary">
+      <div className="stats wide">
+        <div className="stat"><span>Duration</span><b>{d.endedAt ? hm(d.endedAt - d.startedAt) : '—'}<small>{tm(d.startedAt)}{d.endedAt && ` – ${tm(d.endedAt)}`}</small></b></div>
+        <div className="stat"><span>Turnout</span><b>{pct(present.length, d.students.length)}<small>{present.length} of {d.students.length}</small></b></div>
+        <div className="stat ok"><span>Selection rate</span><b>{pct(picked.length, present.length)}<small>{picked.length} of {present.length} present</small></b></div>
+        <div className="stat ok"><span>BLR selected</span><b>{blrPicked}<small>{pct(blrPicked, blrIn.length)} of {blrIn.length} present</small></b></div>
+        <div className="stat"><span>Interviews</span><b>{held.length}<small>{time(() => true)} on average</small></b></div>
+        <div className="stat"><span>Wait for first call</span><b>{waits.length ? mins(avg(waits)) : '—'}<small>on average</small></b></div>
+      </div>
+
+      <section className="card wide">
+        <div className="card-h"><h2>Selected <span className="cnt">{picked.length}</span></h2><p className="meta">Bangalore first</p></div>
+        {picked.length ? (
+          <table>
+            <thead><tr><th>Name</th><th>Registration no.</th><th>Campus</th><th>Final round</th><th>Selected at</th></tr></thead>
+            <tbody>{picked.map(s => { const h = last(s); return (
+              <tr key={s.id}>
+                <td className="name">{s.name}</td>
+                <td className="reg">{s.reg || '—'}</td>
+                <td>{s.campus ? <Camp c={s.campus} /> : '—'}</td>
+                <td>{h ? <>{rname(d, h.r)}<span className="meta"> · {h.room}{panel(h.room) && `, ${panel(h.room)}`}</span></> : '—'}</td>
+                <td>{h?.out ? tm(h.out) : '—'}</td>
+              </tr>
+            ) })}</tbody>
+          </table>
+        ) : <p className="meta">Nobody was selected in this drive.</p>}
+      </section>
+
+      {blrOthers.length > 0 && (
+        <section className="card wide">
+          <div className="card-h"><h2>Bangalore, not selected <span className="cnt">{blrOthers.length}</span></h2><p className="meta">How far each one got, furthest first</p></div>
+          <table>
+            <thead><tr><th>Name</th><th>Registration no.</th><th>Rounds cleared</th><th>Outcome</th></tr></thead>
+            <tbody>{blrOthers.map(s => (
+              <tr key={s.id}>
+                <td className="name">{s.name}</td>
+                <td className="reg">{s.reg || '—'}</td>
+                <td>{cleared(s)} of {d.rounds.length}</td>
+                <td className={s.status === 'rejected' ? 'no' : ''}>{statusLabel(d, s)}</td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </section>
+      )}
+
       <section className="card">
         <div className="card-h"><h2>By campus</h2><p className="meta">Students on the list, and how they did</p></div>
         <table>
-          <thead><tr><th>Campus</th><th>Students</th><th>Present</th><th>Selected</th><th>Rejected</th></tr></thead>
+          <thead><tr><th>Campus</th><th>Students</th><th>Present</th><th>Selected</th><th>Rejected</th><th>Rate</th></tr></thead>
           <tbody>
-            {(['MPL', 'BLR', ''] as Campus[]).filter(c => c || count(s => !s.campus)).map(c => ( // drives from before campuses were required can have some without one
-              <tr key={c}><td>{c ? <Camp c={c} /> : <span className="meta">No campus</span>}</td>{campus(c).map((v, i) => <td key={i} className={i === 2 && v ? 'ok' : ''}>{v}</td>)}</tr>
+            {CAMPUS_ORDER.filter(c => c || count(s => !s.campus)).map(c => ( // drives from before campuses were required can have some without one
+              <tr key={c}><td>{c ? <Camp c={c} /> : <span className="meta">No campus</span>}</td>{campusRow(c).map((v, i) => <td key={i} className={i === 2 && v ? 'ok' : ''}>{v}</td>)}</tr>
             ))}
-            <tr className="total"><td>Total</td>{campus(null).map((v, i) => <td key={i}>{v}</td>)}</tr>
+            <tr className="total"><td>Total</td>{campusRow(null).map((v, i) => <td key={i}>{v}</td>)}</tr>
           </tbody>
         </table>
       </section>
       <section className="card">
         <div className="card-h"><h2>Round by round</h2><p className="meta">Interviews held, and who cleared each round</p></div>
         <table>
-          <thead><tr><th>Round</th><th>Interviewed</th><th>Cleared</th><th>Rejected</th><th>Avg. time</th></tr></thead>
-          <tbody>{d.rounds.map((name, i) => (
-            <tr key={i}>
-              <td className="name">{name}</td>
-              <td>{count(s => s.hist.some(h => h.r === i && h.res === 'done'))}</td>
-              <td>{count(s => s.done > i + 1 || (s.done === i + 1 && ['waiting', 'in', 'selected'].includes(s.status)))}</td>
-              <td>{count(s => s.status === 'rejected' && s.done === i + 1)}</td>
-              <td>{time(h => h.r === i)}</td>
-            </tr>
-          ))}</tbody>
+          <thead><tr><th>Round</th><th>Interviewed</th><th>Cleared</th><th>Rejected</th><th>Pass</th><th>Avg. time</th></tr></thead>
+          <tbody>{d.rounds.map((name, i) => {
+            const seen = count(s => s.hist.some(h => h.r === i && h.res === 'done'));
+            const cleared = count(s => s.done > i + 1 || (s.done === i + 1 && ['waiting', 'in', 'selected'].includes(s.status)));
+            return (
+              <tr key={i}>
+                <td className="name">{name}</td>
+                <td>{seen}</td>
+                <td>{cleared}</td>
+                <td>{count(s => s.status === 'rejected' && s.done === i + 1)}</td>
+                <td>{pct(cleared, seen)}</td>
+                <td>{time(h => h.r === i)}</td>
+              </tr>
+            );
+          })}</tbody>
         </table>
       </section>
       <section className="card">
-        <div className="card-h"><h2>Cabins</h2><p className="meta">Interviews each panel took</p></div>
+        <div className="card-h"><h2>Cabins</h2><p className="meta">Interviews each panel took, and time spent interviewing</p></div>
         <table>
-          <thead><tr><th>Cabin</th><th>Interviews</th><th>Avg. time</th></tr></thead>
-          <tbody>{d.rooms.map(r => (
-            <tr key={r.id}>
-              <td><span className="name">{r.name}</span>{r.panel && <span className="meta"> · {r.panel}</span>}</td>
-              <td>{held.filter(h => h.room === r.name).length}</td>
-              <td>{time(h => h.room === r.name)}</td>
-            </tr>
-          ))}</tbody>
+          <thead><tr><th>Cabin</th><th>Interviews</th><th>Avg. time</th><th>Busy for</th></tr></thead>
+          <tbody>{d.rooms.map(r => {
+            const busy = timed.filter(h => h.room === r.name).reduce((a, h) => a + h.out! - h.in!, 0);
+            return (
+              <tr key={r.id}>
+                <td><span className="name">{r.name}</span>{r.panel && <span className="meta"> · {r.panel}</span>}</td>
+                <td>{held.filter(h => h.room === r.name).length}</td>
+                <td>{time(h => h.room === r.name)}</td>
+                <td>{busy ? hm(busy) : '—'}</td>
+              </tr>
+            );
+          })}</tbody>
         </table>
       </section>
+      {absent.length > 0 && (
+        <section className="card">
+          <div className="card-h"><h2>Absent <span className="cnt">{absent.length}</span></h2><p className="meta">With the reason given at attendance</p></div>
+          <table>
+            <thead><tr><th>Name</th><th>Campus</th><th>Reason</th></tr></thead>
+            <tbody>{absent.map(s => <tr key={s.id}><td><Who s={s} /></td><td>{s.campus ? <Camp c={s.campus} /> : '—'}</td><td className="meta">{s.reason || '—'}</td></tr>)}</tbody>
+          </table>
+        </section>
+      )}
+      {open.length > 0 && (
+        <section className="card">
+          <div className="card-h"><h2>Unfinished <span className="cnt">{open.length}</span></h2><p className="meta">Still in the process when the drive ended</p></div>
+          <table>
+            <thead><tr><th>Name</th><th>Campus</th><th>Where they were</th></tr></thead>
+            <tbody>{open.map(s => <tr key={s.id}><td><Who s={s} /></td><td>{s.campus ? <Camp c={s.campus} /> : '—'}</td><td className="meta">{statusLabel(d, s)}</td></tr>)}</tbody>
+          </table>
+        </section>
+      )}
     </div>
   );
 }

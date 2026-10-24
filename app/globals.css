@@ -234,7 +234,9 @@ td.reg,.prow .reg,small.reg{font:12px var(--mono);color:var(--mute);white-space:
 .summary tr:last-child td,.summary tr:has(+ .total) td{border-bottom:0}
 .summary tr.total td{border-top:1px solid var(--line);font-weight:600}
 .summary td.ok{color:var(--free-ink);font-weight:600}
-.summary .name{font-weight:500}
+.summary .name{font-weight:500} .summary .wide{grid-column:1/-1} .summary .reg{font-family:var(--mono);font-size:12px;color:var(--mute)} .summary td.no{color:var(--bad-ink)}
+.summary{grid-auto-rows:max-content} .summary .card{min-height:auto;overflow-x:auto} .summary .wide :is(th,td){text-align:left}
+.summary .stats{flex-wrap:wrap} .summary .stat{flex:1 1 150px} .summary .stat b{flex-direction:column;align-items:flex-start;gap:7px}
 
 /* empty states and cards in the middle of the page */
 .emptyst{width:100%;max-width:470px;margin:9vh auto 0;display:flex;flex-direction:column;gap:18px;background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:var(--sh);padding:30px}
