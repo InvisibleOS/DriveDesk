@@ -2,21 +2,22 @@
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
-import { LABEL, localDate, type Drive, type Status } from '@/lib/drive';
-import { Board, Camp } from '../../board';
-import { Activity, LocationPick, Setup, Students, Summary, exportCSV } from '../../panels';
-import { AlsoIn, DeskMenu, Field, Warnings, Icon, TopBar, ask, letGo, longDate, post, tm, useDrive, type Live, type Seen, type Send } from '../../ui';
+import { LABEL, forecast, localDate, type Drive, type Status } from '@/lib/drive';
+import { Board, Camp, span } from '../../board';
+import { Activity, LocationPick, Setup, Students, Summary, exportCSV, exportSelected } from '../../panels';
+import { AlsoIn, DeskMenu, Field, Warnings, Icon, TopBar, ask, letGo, longDate, post, tm, useDrive, useNow, type Live, type Seen, type Send } from '../../ui';
 
 type Tab = 'board' | 'setup' | 'log'; // 'board' is the summary once a drive has ended
 const STATS = [['present', 'Present', ''], ['in', 'In cabins', 'in'], ['pending', 'Awaiting', 'pend'], ['selected', 'Selected', 'ok'], ['rejected', 'Rejected', 'no'], ['absent', 'Absent', 'abs']] as const;
 
-const span = (ms: number) => { const m = Math.round(ms / 60000); return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min` };
+// while a drive runs: when its last interview likely ends, from the pace so far
+const Finish = ({ d }: { d: Drive }) => { const f = forecast(d, useNow()); return f && f.done > Date.now() ? <> · likely done by {tm(f.done)}</> : null };
 // the drive's date, place and hours, under the top bar
 const Meta = ({ d }: { d: Drive }) => (
   <div className="pmeta">
     <span><Icon n="calendar" s={14} />{longDate(d.date)}</span>
     {d.location && <span><Icon n="pin" s={14} />{d.location}</span>}
-    {d.startedAt > 0 && <span><Icon n="clock" s={14} />{d.endedAt ? `${tm(d.startedAt)} – ${tm(d.endedAt)} · ${span(d.endedAt - d.startedAt)}` : `Started ${tm(d.startedAt)}`}</span>}
+    {d.startedAt > 0 && <span><Icon n="clock" s={14} />{d.endedAt ? `${tm(d.startedAt)} – ${tm(d.endedAt)} · ${span(d.endedAt - d.startedAt)}` : <>Started {tm(d.startedAt)}{d.status === 'live' && <Finish d={d} />}</>}</span>}
   </div>
 );
 
@@ -63,11 +64,11 @@ export default function Desk() {
           <button onClick={() => exportCSV(d)} title="Download the results sheet (Excel)" aria-label="Results"><Icon n="download" /><span className="hide-sm">Results</span></button>
           <button onClick={() => send({ type: 'reopen' })} title="Reopen this drive" aria-label="Reopen drive"><Icon n="reopen" /><span className="hide-sm">Reopen drive</span></button>
           <button className="icon ghost" onClick={del} title="Delete this drive" aria-label="Delete this drive"><Icon n="trash" /></button>
-          <DeskMenu items={[[<><Icon n="logs" />Logs</>, () => setTab('log')]]} />
+          <DeskMenu items={[[<><Icon n="download" />Selected students (CSV)</>, () => exportSelected(d)], [<><Icon n="logs" />Logs</>, () => setTab('log')]]} />
         </> : <>
           <button className="icon ghost" disabled={!x.undo} onClick={() => send({ type: 'undo' })} title={x.undo ? `Undo: ${x.undo} (Ctrl/⌘+Z)` : 'Nothing to undo'} aria-label="Undo"><Icon n="undo" /></button>
           <button className="danger" onClick={end} title="Finish this drive and move it to the calendar history"><Icon n="flag" /><span className="hide-sm">End drive</span></button>
-          <DeskMenu items={[[<><Icon n="settings" />Settings</>, () => setTab('setup')], [<><Icon n="logs" />Logs</>, () => setTab('log')]]} />
+          <DeskMenu items={[[<><Icon n="settings" />Settings</>, () => setTab('setup')], [<><Icon n="download" />Selected students (CSV)</>, () => exportSelected(d)], [<><Icon n="logs" />Logs</>, () => setTab('log')]]} />
         </>}
       </TopBar>
       <main>

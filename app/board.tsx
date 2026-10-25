@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { fits, occ, rname, roundOpen, upNext, roundsLabel, type Drive, type Room, type Student } from '@/lib/drive';
+import { fits, forecast, occ, rname, roundOpen, upNext, roundsLabel, type Drive, type Room, type Student } from '@/lib/drive';
 import { AlsoIn, Icon, tm, useFit, useNow, type Seen, type Send } from './ui';
 
 const mins = (t: number, from = t) => `${Math.max(0, Math.floor((t - from) / 60000))} min`;
@@ -42,6 +42,7 @@ export function RoomCard({ d, r, t, send, pick, onPicked, big, also }: { d: Driv
 type Tab = number | 'final';
 
 // campus tag; nothing when the student has no campus
+export const span = (ms: number) => { const m = Math.round(ms / 60000); return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min` };
 export const Camp = ({ c }: { c: string }) => c ? <span className={`camp c-${c}`}>{c}</span> : null;
 
 // One queue per round, shown as tabs: a student sits in the queue of the round they go in for next (round index = done).
@@ -60,6 +61,7 @@ function QueuePanel({ d, send, sel, setSel, also }: { d: Drive; send: Send; sel:
   const list = q ? inQueue.filter(match) : of(cur);
   const decide = (s: Student) => s.status === 'pending' || (s.status === 'waiting' && s.done >= L);
   const ready = list.filter(s => s.status === 'waiting' && !decide(s)), pend = list.filter(decide);
+  const eta = forecast(d, useNow())?.wait; // likely wait per ready student, once the first interview has finished
   const due = upNext(d); // Call shows for the top students, one per free cabin of their round; the rest appear on hover (a panel may ask for someone)
   // hovering or picking someone further down hides the last of the top ones in that round, so the Calls showing still match the free cabins
   const other = [hover, sel].map(id => inQueue.find(s => s.id === id)).find(s => s?.status === 'waiting' && !due.has(s.id));
@@ -76,6 +78,7 @@ function QueuePanel({ d, send, sel, setSel, also }: { d: Drive; send: Send; sel:
           {!q && <span className="num">{i + 1}</span>}
           <span className="nm" title={s.name}>{s.name}</span><AlsoIn a={also?.[s.id]} />
           {q && <span className="sub">{rname(d, s.done)}</span>}
+          {eta?.[s.id] !== undefined && eta[s.id] >= 60_000 && <span className="sub" title="Likely wait before this student is called">~{span(eta[s.id])}</span>}
           <button className={`sm${sel === s.id ? '' : due.has(s.id) && s.id !== edge ? ' primary' : ' primary later'}`} disabled={!open && sel !== s.id} title={open ? undefined : `All ${rname(d, s.done)} cabins are busy`}
             onClick={e => { e.stopPropagation(); toggle(s) }}>{sel === s.id ? 'Cancel' : 'Call'}</button>
         </div>

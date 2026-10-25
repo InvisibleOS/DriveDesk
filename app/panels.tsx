@@ -66,6 +66,20 @@ export function exportCSV(d: Drive) {
   download(`${d.company}-${d.date}-results.csv`, '﻿' + csv, 'text/csv'); // BOM so Excel reads Indian names correctly
 }
 
+// The selected students only, Bangalore first: for the placement office's records.
+export function exportSelected(d: Drive) {
+  const order: Campus[] = ['BLR', 'MPL', ''];
+  const picked = d.students.filter(s => s.status === 'selected').sort((a, b) => order.indexOf(a.campus) - order.indexOf(b.campus) || a.name.localeCompare(b.name));
+  if (!picked.length) return toast('Nobody has been selected in this drive yet', true);
+  const head = ['Registration number', 'Name', 'Campus', 'Company', 'Date', 'Final round', 'Cabin', 'Interviewer', 'Selected at'];
+  const rows = picked.map(s => {
+    const h = [...s.hist].reverse().find(h => h.res === 'done');
+    return [s.reg, s.name, s.campus, d.company, d.date, h ? rname(d, h.r) : '', h?.room ?? '', d.rooms.find(r => r.name === h?.room)?.panel ?? '', h?.out ? tm(h.out) : ''];
+  });
+  const csv = [head, ...rows].map(r => r.map(c => `"${String(c ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
+  download(`${d.company}-${d.date}-selected.csv`, '\ufeff' + csv, 'text/csv'); // BOM so Excel reads Indian names correctly
+}
+
 // Upload (CSV / Excel) or paste a student list, then review names and campuses before they are added.
 export function StudentImport({ rows, setRows, fallback, setFallback }: { rows: Row[]; setRows: (r: Row[]) => void; fallback: Campus; setFallback: (c: Campus) => void }) {
   const [over, setOver] = useState(false);
@@ -248,7 +262,7 @@ export function Summary({ d }: { d: Drive }) {
       </div>
 
       <section className="card wide">
-        <div className="card-h"><h2>Selected <span className="cnt">{picked.length}</span></h2><p className="meta">Bangalore first</p></div>
+        <div className="card-h row"><div><h2>Selected <span className="cnt">{picked.length}</span></h2><p className="meta">Bangalore first</p></div>{picked.length > 0 && <button className="sm" onClick={() => exportSelected(d)}><Icon n="download" s={14} />Download CSV</button>}</div>
         {picked.length ? (
           <table>
             <thead><tr><th>Name</th><th>Registration no.</th><th>Campus</th><th>Final round</th><th>Selected at</th></tr></thead>

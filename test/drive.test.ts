@@ -1,7 +1,7 @@
 // npm test — onboarding, CSV import, the call → finish → result flow, ending a drive, and old saves upgrading
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { alsoIn, apply, placedIn, fits, migrate, upNext, newDrive, parseStudents, planDrive, roundOpen, statusLabel, summary, toTable, waiting, type Action, type DriveConfig } from '../lib/drive.ts';
+import { alsoIn, apply, forecast, placedIn, fits, migrate, upNext, newDrive, parseStudents, planDrive, roundOpen, statusLabel, summary, toTable, waiting, type Action, type DriveConfig } from '../lib/drive.ts';
 
 const cfg = (over: Partial<DriveConfig> = {}): DriveConfig => ({
   company: 'Optum', date: '2026-10-23', location: 'J Block Interview Cabins', rounds: ['Tech', 'HR', 'Final'],
@@ -185,4 +185,18 @@ test('students selected in an earlier drive are known as placed', () => {
     apply(d, { type: 'move', id: asha, to: 'selected' }, 4);
   }
   assert.deepEqual(placedIn([later, early]), { '111111111': { company: 'Infosys', date: '2026-10-20' } }, 'the first offer counts; Ben was never selected');
+});
+
+test('wait and finish estimates follow the average interview and the free cabins', () => {
+  const d = newDrive(cfg({ students: ['A', 'B', 'C', 'D'].map(name => ({ reg: '', name, campus: 'BLR' })) }), 'x', 0);
+  const [a, b, c, dd] = d.students, min = 60_000;
+  apply(d, { type: 'attendance' }, 1);
+  assert.equal(forecast(d, 1), null, 'no estimate before the first interview has finished');
+  apply(d, { type: 'call', id: a.id, room: d.rooms[0].id }, 0);
+  apply(d, { type: 'out', id: a.id }, 10 * min);
+  apply(d, { type: 'move', id: a.id, to: 'waiting' }, 10 * min);
+  const f = forecast(d, 10 * min)!;
+  // round 1 takes 10 min; Cabin 1 and Cabin 3 take it, Cabin 2 takes rounds 2 and 3
+  assert.deepEqual([b, c, dd, a].map(s => f.wait[s.id] / min), [0, 0, 10, 0], 'B and C go now, D when a round-1 cabin frees up, A to Cabin 2');
+  assert.ok(f.done >= 20 * min, 'not done before D finishes');
 });

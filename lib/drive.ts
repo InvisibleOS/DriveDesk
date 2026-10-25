@@ -228,6 +228,50 @@ export function upNext(d: Drive) {
   return new Set(waiting(d).filter(s => (seen[s.done] = (seen[s.done] ?? 0) + 1) <= (free[s.done] ?? 0)).map(s => s.id));
 }
 
+// Rough timing for a live drive, from how it has gone so far: wait = ms until each ready student is likely called,
+// done = when the last interview likely ends. Plays the rest of the drive forward: each cabin takes the earliest
+// student it can, every interview lasts its round's average (call to out), and of the students finishing a round only
+// that round's share who cleared it so far go on to the next. Nothing until the first interview has finished.
+// ponytail: averages and pass rates only; weight recent interviews if early ones skew it.
+export function forecast(d: Drive, now: number): { wait: Record<string, number>; done: number } | null {
+  const L = d.rounds.length, held = d.students.flatMap(s => s.hist).filter(h => h.res === 'done' && h.out);
+  if (!held.length) return null;
+  const mean = (h: Hist[]) => h.reduce((a, x) => a + x.out! - x.call, 0) / h.length;
+  const all = mean(held), len = d.rounds.map((_, i) => { const h = held.filter(x => x.r === i); return h.length ? mean(h) : all });
+  // pass rate per round, nudged towards half while there are few results: (cleared + 1) / (decided + 2)
+  const pass = d.rounds.map((_, i) => {
+    const ok = d.students.filter(s => s.done > i + 1 || (s.done === i + 1 && ['waiting', 'in', 'selected'].includes(s.status))).length;
+    const no = d.students.filter(s => s.status === 'rejected' && s.done === i + 1).length;
+    return (ok + 1) / (ok + no + 2);
+  });
+  const acc = d.rounds.map(() => .5); // goes on to the next round when a round's running share reaches a whole student
+  const goesOn = (k: number) => k + 1 < L && (acc[k] += pass[k]) >= 1 && (acc[k] -= 1, true);
+  type Job = { id: string; k: number; ready: number; first: boolean };
+  // the ready line first: students who clear a round later join the back of the next queue
+  const jobs: Job[] = waiting(d).filter(s => s.done < L).map(s => ({ id: s.id, k: s.done, ready: now, first: true }));
+  const free = new Map(d.rooms.map(r => [r.id, now]));
+  let done = now;
+  for (const s of d.students) {
+    if (s.status === 'in' && s.room) {
+      const end = Math.max(now, last(s)!.call + len[s.done]);
+      free.set(s.room, end); done = Math.max(done, end);
+      if (goesOn(s.done)) jobs.push({ id: s.id, k: s.done + 1, ready: end, first: false });
+    } else if (s.status === 'pending' && goesOn(s.done - 1)) jobs.push({ id: s.id, k: s.done, ready: now, first: false });
+  }
+  const wait: Record<string, number> = {};
+  while (jobs.length) {
+    const j = jobs.reduce((a, b) => b.ready < a.ready ? b : a); // earliest ready; ties keep queue order
+    jobs.splice(jobs.indexOf(j), 1);
+    const room = d.rooms.filter(r => r.rounds.includes(j.k)).sort((a, b) => free.get(a.id)! - free.get(b.id)!)[0];
+    if (!room) continue; // no cabin takes this round
+    const start = Math.max(j.ready, free.get(room.id)!), end = start + len[j.k];
+    if (j.first) wait[j.id] = start - now;
+    free.set(room.id, end); done = Math.max(done, end);
+    if (goesOn(j.k)) jobs.push({ id: j.id, k: j.k + 1, ready: end, first: false });
+  }
+  return { wait, done };
+}
+
 // Applies one action to d in place. Throws on invalid input (caller rolls back). Returns an optional message for the user.
 export function apply(d: Drive, a: Action, t = Date.now()): string | undefined {
   const st = (id: string) => { const s = d.students.find(s => s.id === id); if (!s) throw Error('Student not found'); return s };
