@@ -7,7 +7,7 @@
 
 <p align="center">
   The placement committee's desk for campus interview drives: attendance, queues, cabins and results,<br>
-  live on every committee laptop and saved even when the Wi-Fi isn't.
+  synced across every laptop, and nothing is lost if the Wi-Fi drops.
 </p>
 
 ## Download
