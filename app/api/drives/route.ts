@@ -1,10 +1,10 @@
-import { create, guard, list, placed } from '@/lib/store';
+import { create, guard, list } from '@/lib/store';
 
-// GET → every drive's summary (dashboard + calendar) and who is already placed (for a new drive's student list). POST → start a new drive from the onboarding answers.
+// GET → every drive's summary (dashboard + calendar). POST → start a new drive from the onboarding answers.
 export async function GET(req: Request) {
   const no = guard(req);
   if (no) return no;
-  return Response.json({ drives: list(), placed: placed() });
+  return Response.json({ drives: list() });
 }
 
 export async function POST(req: Request) {

@@ -3,7 +3,8 @@ import { useEffect, useState } from 'react';
 import { fits, forecast, occ, rname, roundOpen, upNext, roundsLabel, type Drive, type Room, type Student } from '@/lib/drive';
 import { AlsoIn, Icon, tm, useFit, useNow, type Seen, type Send } from './ui';
 
-const mins = (t: number, from = t) => `${Math.max(0, Math.floor((t - from) / 60000))} min`;
+// time in the cabin so far, m:ss (h:mm:ss past an hour)
+const clock = (ms: number) => { const x = Math.max(0, Math.floor(ms / 1000)), h = Math.floor(x / 3600), m = Math.floor(x / 60) % 60, s = String(x % 60).padStart(2, '0'); return h ? `${h}:${String(m).padStart(2, '0')}:${s}` : `${m}:${s}` };
 export function RoomCard({ d, r, t, send, pick, onPicked, big, also }: { d: Drive; r: Room; t: number; send: Send; pick?: Student | null; onPicked?: () => void; big?: boolean; also?: Seen }) {
   const [over, setOver] = useState(false);
   const s = occ(d, r), k = s ? s.status : 'free', h = s?.hist[s.hist.length - 1];
@@ -28,7 +29,7 @@ export function RoomCard({ d, r, t, send, pick, onPicked, big, also }: { d: Driv
       <div className="rb">
         {s && h ? <>
           <div className="who" title={s.name}>{s.name}</div>
-          <div className="info" title={`In since ${tm(h.in)}`}><Camp c={s.campus} />{rname(d, h.r)} · {mins(t, h.in)}<AlsoIn a={also?.[s.id]} /></div>
+          <div className="info" title={`In since ${tm(h.in)}`}><span>{rname(d, h.r)}</span><span className="timer"><Icon n="clock" s={13} />{clock(t - (h.in ?? t))}</span><AlsoIn a={also?.[s.id]} /></div>
           {big && <div className="acts"><button onClick={() => send({ type: 'out', id: s.id })}><Icon n="check" s={15} />Exited</button></div>}
         </> : <div className="avail"><b>{over ? 'Drop to call here' : 'Available'}</b>{!pick && !big && <span>Drag a name here, or press Call</span>}</div>}
         {tap && <b className="go">{s ? 'Exited' : 'Send here'}</b>}
@@ -51,6 +52,7 @@ function QueuePanel({ d, send, sel, setSel, also }: { d: Drive; send: Send; sel:
   const [q, setQ] = useState('');
   const [tab, setTab] = useState<Tab | null>(null);
   const [hover, setHover] = useState<string | null>(null);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
   const L = d.rounds.length;
   const inQueue = d.students.filter(s => s.status === 'waiting' || s.status === 'pending').sort((a, b) => a.t - b.t);
   const of = (t: Tab) => inQueue.filter(s => t === 'final' ? s.done >= L : s.done === t);
@@ -85,14 +87,19 @@ function QueuePanel({ d, send, sel, setSel, also }: { d: Drive; send: Send; sel:
       </div>
     );
   };
+  // ticking students awaiting a result swaps their own ✓ / ✗ for one pair on the heading, for all of them at once
+  const chosen = pend.filter(s => picked.has(s.id));
+  const pick = (ids: string[], on: boolean) => setPicked(p => { const n = new Set(p); for (const id of ids) on ? n.add(id) : n.delete(id); return n });
+  const decideAll = (pass: boolean) => send({ type: 'results', ids: chosen.map(s => s.id), pass });
   const pendRow = (s: Student) => {
     const prev = rname(d, s.done - 1), last = s.done >= L;
     return (
       <div key={s.id} className="qr pend">
+        <input type="checkbox" checked={picked.has(s.id)} onChange={e => pick([s.id], e.target.checked)} aria-label={`Pick ${s.name}`} />
         <span className="nm" title={s.name}>{s.name}</span><AlsoIn a={also?.[s.id]} />
         <span className="sub">{prev} result</span>
-        <button className="sm icon success" title={last ? 'Selected' : `Cleared ${prev}: stays in ${rname(d, s.done)}`} onClick={e => act(e, { type: 'move', id: s.id, to: last ? 'selected' : 'waiting' })}><Icon n="check" s={13} /></button>
-        <button className="sm icon danger" title={`Rejected after ${prev}`} onClick={e => act(e, { type: 'move', id: s.id, to: 'rejected' })}><Icon n="x" s={13} /></button>
+        {!chosen.length && <><button className="sm icon success" title={last ? 'Selected' : `Cleared ${prev}: stays in ${rname(d, s.done)}`} onClick={e => act(e, { type: 'move', id: s.id, to: last ? 'selected' : 'waiting' })}><Icon n="check" s={13} /></button>
+        <button className="sm icon danger" title={`Rejected after ${prev}`} onClick={e => act(e, { type: 'move', id: s.id, to: 'rejected' })}><Icon n="x" s={13} /></button></>}
       </div>
     );
   };
@@ -117,15 +124,22 @@ function QueuePanel({ d, send, sel, setSel, also }: { d: Drive; send: Send; sel:
       </div>
       <div className="qlist">
         {!q && <div className="qtitle">{cur === 'final' ? `Final result · after ${rname(d, L - 1)}` : `${rname(d, cur)} queue`}</div>}
-        {ready.length > 0 && <><div className="qsub">Ready to call{!q && cur !== 'final' && !roundOpen(d, cur) && <em>All cabins busy</em>}<span>{ready.length}</span></div>{ready.map(readyRow)}</>}
-        {pend.length > 0 && <><div className="qsub">Awaiting result<span>{pend.length}</span></div>{pend.map(pendRow)}</>}
+        {ready.length > 0 && <><div className="qsub">Ready to call{!q && cur !== 'final' && !roundOpen(d, cur) && <em>{d.rooms.length ? 'All cabins busy' : 'No cabins yet'}</em>}<span>{ready.length}</span></div>{ready.map(readyRow)}</>}
+        {pend.length > 0 && <><div className="qsub pick">
+          <input type="checkbox" checked={chosen.length === pend.length}  onChange={e => pick(pend.map(s => s.id), e.target.checked)} aria-label="Pick everyone awaiting a result" />
+          Awaiting result<span>{chosen.length ? `${chosen.length} of ${pend.length}` : pend.length}</span>
+          {chosen.length > 0 && <>
+            <button className="sm icon success" title={`Clear the ${chosen.length} picked`} onClick={() => decideAll(true)}><Icon n="check" s={13} /></button>
+            <button className="sm icon danger" title={`Reject the ${chosen.length} picked`} onClick={() => decideAll(false)}><Icon n="x" s={13} /></button>
+          </>}
+        </div>{pend.map(pendRow)}</>}
         {!list.length && <div className="empty">{q ? 'No match' : 'Nobody in this queue'}</div>}
       </div>
     </aside>
   );
 }
 
-export function Board({ d, send, also }: { d: Drive; send: Send; also?: Seen }) {
+export function Board({ d, send, also, setup }: { d: Drive; send: Send; also?: Seen; setup?: () => void }) {
   const [sel, setSel] = useState<string | null>(null);
   const [gridRef, gridStyle] = useFit(d.rooms.length, { w: 240, h: 150 }, { w: 170, h: 112 });
   const t = useNow(); // minutes each interview has been running
@@ -140,9 +154,12 @@ export function Board({ d, send, also }: { d: Drive; send: Send; also?: Seen }) 
   return (
     <div className="board">
       <section className="cabins">
-        <div className="grid" ref={gridRef} style={gridStyle}>
+        {d.rooms.length ? <div className="grid" ref={gridRef} style={gridStyle}>
           {d.rooms.map(r => <RoomCard key={r.id} d={d} r={r} t={t} send={send} pick={pick} onPicked={() => setSel(null)} also={also} />)}
-        </div>
+        </div> : <div className="emptyst centered">
+          <div><h2>No cabins yet</h2><p className="meta">Set the rounds and add a cabin for each panel to start calling students.</p></div>
+          {setup && <button className="primary" onClick={setup}><Icon n="settings" />Set up rounds and cabins</button>}
+        </div>}
       </section>
       <QueuePanel d={d} send={send} sel={pick?.id ?? null} setSel={setSel} also={also} />
     </div>

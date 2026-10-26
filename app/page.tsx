@@ -1,8 +1,9 @@
 'use client';
 import Link from 'next/link';
 import { useState } from 'react';
-import { localDate, type Summary } from '@/lib/drive';
-import { DeskMenu, Icon, TopBar, longDate, tm, useDrives } from './ui';
+import { PHASES, localDate, type Summary } from '@/lib/drive';
+import { PICON } from './phases';
+import { DeskMenu, Icon, PageHead, Stat, TopBar, longDate, tm, useDrives } from './ui';
 
 const WEEK = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
@@ -12,6 +13,8 @@ function monthDays(month: string) {
   return Array.from({ length: 42 }, (_, i) => localDate(new Date(y, m - 1, 1 - lead + i).getTime()));
 }
 const shift = (month: string, by: number) => { const [y, m] = month.split('-').map(Number); return localDate(new Date(y, m - 1 + by, 1).getTime()).slice(0, 7) };
+// a drive's phases each sit on their own day: the calendar and the day panel list phases, not drives
+type Entry = { s: Summary; p: Summary['phases'][number]; day: string };
 const monthName = (month: string) => new Date(`${month}-01T00:00`).toLocaleDateString([], { month: 'long', year: 'numeric' });
 
 export default function Dashboard() {
@@ -21,35 +24,32 @@ export default function Dashboard() {
   const [month, setMonth] = useState(today.slice(0, 7));
   if (gate || !list) return gate;
 
-  const byDate = new Map<string, Summary[]>();
-  for (const s of list) byDate.set(s.date, [...(byDate.get(s.date) ?? []), s]);
+  const all: Entry[] = list.flatMap(s => s.phases.map(p => ({ s, p, day: p.at.slice(0, 10) }))).sort((a, b) => a.p.at.localeCompare(b.p.at));
+  const byDate = new Map<string, Entry[]>();
+  for (const e of all) byDate.set(e.day, [...(byDate.get(e.day) ?? []), e]);
   const live = list.filter(s => s.status === 'live');
-  const inMonth = list.filter(s => s.date.startsWith(month));
+  const inMonth = list.filter(s => s.phases.some(p => p.at.startsWith(month)));
   const total = (k: 'students' | 'blrSelected') => inMonth.reduce((a, s) => a + s[k], 0);
-  // today also lists drives from earlier days that are still open (running, or never set up), so they are one click away
-  const earlier = sel === today ? list.filter(s => s.date < today && s.status !== 'done') : [];
+  // today also lists phases from earlier days that are still open (running, or never ended), so they are one click away
+  const earlier = sel === today ? all.filter(e => e.day < today && e.p.state !== 'Done') : [];
   const dayDrives = [...earlier, ...(byDate.get(sel) ?? [])];
   const pick = (day: string) => { setSel(day); setMonth(day.slice(0, 7)) };
 
   return (
     <div className="app">
       <TopBar>
-        <Link className="btn primary" href="/new"><Icon n="plus" />New drive</Link>
+        <Link className="btn primary" href="/create"><Icon n="plus" />New drive</Link>
         <DeskMenu />
       </TopBar>
       <main className="dash">
-        <div className="phead">
-          <div>
-            <h1>Drives</h1>
-            <p className="meta">{longDate(today)} · {live.length ? `${live.length} in progress` : 'No drive running right now'}</p>
-          </div>
+        <PageHead title="Drives" meta={<p className="meta">{longDate(today)} · {live.length ? `${live.length} in progress` : 'No drive running right now'}</p>}>
           <div className="stats">
-            <div className="stat"><span>Drives in {monthName(month).split(' ')[0]}</span><b>{inMonth.length}<small>{inMonth.filter(s => s.status === 'live').length} in progress</small></b></div>
-            <div className="stat"><span>Students</span><b>{total('students')}</b></div>
-            <div className="stat ok"><span>BLR selected</span><b>{total('blrSelected')}<small>this month</small></b></div>
-            <div className="stat"><span>All drives</span><b>{list.length}<small>since you started</small></b></div>
+            <Stat label={`Drives in ${monthName(month).split(' ')[0]}`} value={inMonth.length} sub={`${inMonth.filter(s => s.status === 'live').length} in progress`} />
+            <Stat label="Students" value={total('students')} />
+            <Stat label="BLR selected" value={total('blrSelected')} tone="ok" sub="this month" />
+            <Stat label="All drives" value={list.length} sub="since you started" />
           </div>
-        </div>
+        </PageHead>
 
         <div className="cal-wrap">
           <section className="card cal">
@@ -68,9 +68,9 @@ export default function Dashboard() {
                 const ds = byDate.get(day) ?? [];
                 return (
                   <button key={day} className={`day${day.slice(0, 7) !== month ? ' out' : ''}${day === today ? ' today' : ''}${day === sel ? ' sel' : ''}`}
-                    onClick={() => pick(day)} aria-label={`${longDate(day)}: ${ds.length} drive${ds.length === 1 ? '' : 's'}`} aria-pressed={day === sel}>
+                    onClick={() => pick(day)} aria-label={`${longDate(day)}: ${ds.length} phase${ds.length === 1 ? '' : 's'}`} aria-pressed={day === sel}>
                     <span className="dh"><span className="dn">{+day.slice(8)}</span>{ds.length > 2 && <span className="more">+{ds.length - 2} more</span>}</span>
-                    {ds.slice(0, 2).map(s => <span key={s.id} className={`chip ${s.status}`}>{s.company}</span>)}
+                    {ds.slice(0, 2).map(e => <span key={e.s.id + e.p.k} className={`chip ${tone(e)}`} title={`${e.s.company} · ${PHASES[e.p.k]}`}>{e.s.company} · {e.p.k === 'int' ? 'Interviews' : e.p.k.toUpperCase()}</span>)}
                   </button>
                 );
               })}
@@ -80,15 +80,18 @@ export default function Dashboard() {
           <aside className="card dayp">
             <div className="dayp-h">
               <h2>{sel === today ? 'Today' : longDate(sel)}</h2>
-              <p className="meta">{sel === today && `${longDate(today)} · `}{dayDrives.length ? `${dayDrives.length} drive${dayDrives.length > 1 ? 's' : ''}` : 'No drives'}</p>
+              <p className="meta">{sel === today && `${longDate(today)} · `}{dayDrives.length ? `${dayDrives.length} phase${dayDrives.length > 1 ? 's' : ''}` : 'Nothing scheduled'}</p>
             </div>
             <div className="scroll">
-              {dayDrives.map(s => <DriveCard key={s.id} s={s} today={today} sel={sel} />)}
+              {GROUPS.map(([g, l]) => {
+                const es = dayDrives.filter(e => group(e) === g);
+                return es.length > 0 && <div key={g} className="dgroup"><h3 className="sect-t">{l}<span>{es.length}</span></h3>{es.map(e => <DriveCard key={e.s.id + e.p.k} e={e} sel={sel} />)}</div>;
+              })}
               {!dayDrives.length && (
                 <div className="none">
                   <Icon n="calendar" s={20} />
                   <p>No drives on this day</p>
-                  {sel >= today && <Link className="btn sm" href={sel === today ? '/new' : `/new?date=${sel}`}><Icon n="plus" s={14} />{sel === today ? 'New drive' : 'Plan a drive on this day'}</Link>}
+                  {sel >= today && <Link className="btn sm" href={sel === today ? '/create' : `/create?date=${sel}`}><Icon n="plus" s={14} />{sel === today ? 'New drive' : 'Plan a drive on this day'}</Link>}
                 </div>
               )}
             </div>
@@ -99,21 +102,28 @@ export default function Dashboard() {
   );
 }
 
-// One drive in the day panel. Drives that need something done now carry a filled button for it.
-function DriveCard({ s, today, sel }: { s: Summary; today: string; sel: string }) {
-  const due = s.status === 'planned' && s.date <= today, now = due || s.status === 'live';
-  const [pill, tone, go] = s.status === 'planned' ? [due ? 'Not set up' : 'Scheduled', due ? 'warn' : '', due ? 'Continue setting up' : 'Edit details']
-    : s.status === 'live' ? (s.attendance ? ['In progress', 'ok', 'Open board'] : ['Attendance pending', 'warn', 'Take attendance'])
-    : ['Completed', '', 'View drive'];
-  const when = s.status === 'planned' ? (due ? 'Set up rounds, cabins and students to start' : 'Set up on the day')
-    : s.status === 'live' ? `Started ${tm(s.startedAt)}` : `${tm(s.startedAt)} – ${tm(s.endedAt)}`;
+const tone = ({ p }: Entry) => p.state === 'Live' ? 'live' : p.state === 'Done' ? 'done' : 'planned';
+// the day panel, in what-to-do-first order: running now (or left open from an earlier day), still to come, finished
+const GROUPS = [['now', 'Now'], ['next', 'Coming up'], ['done', 'Done']] as const;
+const group = ({ s, p }: Entry) => p.state === 'Live' || (p.k === 'int' && s.status === 'live') ? 'now' : p.state === 'Done' ? 'done' : 'next';
+
+// One phase of a drive in the day panel. Phases that need something done now carry a filled button for it.
+function DriveCard({ e: { s, p, day }, sel }: { e: Entry; sel: string }) {
+  const int = p.k === 'int', due = p.state === 'Today' || p.state === 'Live';
+  const [pill, tn] = p.state === 'Done' ? ['Done', ''] : p.state === 'Live' ? ['In progress', 'ok live']
+    : int && s.status === 'live' ? ['Attendance open', 'warn'] : p.state === 'Today' ? ['Today', 'warn'] : ['Scheduled', ''];
+  const when = int && s.status === 'done' ? `${tm(s.startedAt)} – ${tm(s.endedAt)}` : p.at.slice(11, 16);
   return (
-    <Link href={due ? `/new?id=${s.id}` : `/drive/${s.id}`} className="dcard">
-      <div className="dc-top"><b>{s.company}</b><span className={`pill ${tone}`}>{pill}</span></div>
-      <div className="dc-meta">{[s.date !== sel && longDate(s.date), s.location, when].filter(Boolean).join(' · ')}</div>
-      {s.status === 'live' && s.attendance && <div className="dc-stats"><span><b>{s.inCabin}</b> in cabins</span><span><b>{s.awaiting}</b> awaiting</span><span><b>{s.blrSelected}</b> BLR selected</span></div>}
-      {s.status === 'done' && <div className="dc-stats"><span><b>{s.students}</b> students</span><span><b>{s.blrSelected}</b> BLR selected</span><span><b>{s.rejected}</b> rejected</span></div>}
-      <span className={now ? 'btn sm primary' : 'dc-open'}>{go}<Icon n="right" s={14} /></span>
+    <Link href={`/drive/${s.id}`} className={`dcard ${group({ s, p, day })}`}>
+      <span className="dc-ico"><Icon n={PICON[p.k]} s={16} /></span>
+      <div className="dc-main">
+        <div className="dc-top"><b>{s.company}</b><span className={`pill ${tn}`}>{pill}</span></div>
+        <div className="dc-meta">{[PHASES[p.k], day !== sel && longDate(day), when, p.venue].filter(Boolean).join(' · ')}</div>
+        {int && s.status === 'live' && s.attendance && <div className="dc-stats"><span><b>{s.inCabin}</b> in cabins</span><span><b>{s.awaiting}</b> awaiting</span><span className="ok"><b>{s.blrSelected}</b> BLR selected</span></div>}
+        {int && s.status === 'done' && <div className="dc-stats"><span><b>{s.students}</b> students</span><span className="ok"><b>{s.blrSelected}</b> BLR selected</span><span><b>{s.rejected}</b> rejected</span></div>}
+        {due && <span className="btn sm primary">{int && s.status === 'live' && s.attendance ? 'Open board' : 'View drive'}<Icon n="right" s={14} /></span>}
+      </div>
+      {!due && <span className="dc-go"><Icon n="next" s={16} /></span>}
     </Link>
   );
 }

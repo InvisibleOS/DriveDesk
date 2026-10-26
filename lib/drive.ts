@@ -17,7 +17,19 @@ export type Drive = {
   roll?: Record<string, string>; // attendance in progress: id → reason, for each student marked absent so far
   rounds: string[]; rooms: Room[]; students: Student[]; log: { t: number; msg: string }[]; seq: number;
   host?: { device: string; name: string; at: number }; // the laptop running this live drive, as of its last change there
+  kind?: Kind; phases?: Phase[]; // the drive as a whole: interviews are its last phase
+  pool?: Pupil[]; // everyone on the list uploaded when the drive was created; `students` are those in the interviews
 };
+export type Kind = 'I' | 'P' | 'I+P'; // like the company, fixed once the drive is created
+export type PhaseKey = 'ppt' | 'oa' | 'int';
+export type Phase = {
+  k: PhaseKey; venue: string; at: string; crew: string[]; // at: local 'YYYY-MM-DDTHH:mm'; crew: its volunteers
+  roll?: Record<string, string>; // a talk's or test's attendance once started: pool id → reason, for each student absent
+  ended?: number; // ended from the desk; a PPT left running also ends by itself LENGTH after it starts
+  excused?: string[]; // absent here, but made eligible for the phases after it
+};
+export type Pupil = Row & { id: string };
+export type Plan = { kind: Kind; phases: Phase[]; students?: Row[] };
 export type Row = { reg: string; name: string; campus: Campus }; // reg: 9-digit registration number, the student's key ('' if unknown)
 export type DriveConfig = { company: string; date: string; location: string; rounds: string[]; rooms: { panel?: string; rounds: number[] }[]; students: Row[] };
 
@@ -25,6 +37,7 @@ export type Action =
   | { type: 'call'; id: string; room: string }
   | { type: 'out'; id: string }
   | { type: 'move'; id: string; to: 'waiting' | 'pending' | 'selected' | 'rejected' | 'absent' }
+  | { type: 'results'; ids: string[]; pass: boolean }
   | { type: 'setDone'; id: string; n: number }
   | { type: 'setCampus'; id: string; campus: Campus }
   | { type: 'roomRounds'; room: string; rounds: number[] }
@@ -32,28 +45,102 @@ export type Action =
   | { type: 'setRooms'; n: number }
   | { type: 'addRoom' }
   | { type: 'delRoom'; room: string }
-  | { type: 'company'; name: string }
   | { type: 'date'; date: string }
   | { type: 'location'; location: string }
   | { type: 'renameRound'; i: number; name: string }
   | { type: 'addRound' }
-  | { type: 'delRound' }
+  | { type: 'delRound'; i?: number } // without i: the last one
   | { type: 'addStudents'; rows: Row[] }
   | { type: 'clearStudents' }
   | { type: 'setup'; config: DriveConfig }
   | { type: 'roll'; id?: string; absent?: boolean; reason?: string } // without id: attendance has started
   | { type: 'attendance' }
-  | { type: 'reason'; id: string; reason: string } // why an absent student is absent
+  | { type: 'reason'; id: string; reason: string; k?: PhaseKey } // why an absent student is absent; with k, from a PPT's or OA's attendance (any time)
   | { type: 'finish' }
-  | { type: 'reopen' };
+  | { type: 'reopen' }
+  | { type: 'plan'; plan: Plan }
+  | { type: 'phaseRoll'; k: PhaseKey; id?: string; absent?: boolean; reason?: string } // without id: attendance has started
+  | { type: 'endPhase'; k: PhaseKey }
+  | { type: 'excuse'; k: PhaseKey; id: string } // absent at phase k, eligible for the later ones anyway
+  | { type: 'start' }; // the interviews begin, with the rounds and cabins set on the drive beforehand
 
 // text edits: saved, but not worth an undo step
-export const QUIET = new Set(['company', 'renameRound', 'editRoom', 'roll', 'reason']);
+export const QUIET = new Set(['renameRound', 'editRoom', 'roll', 'reason', 'plan', 'phaseRoll']);
 
 export const LABEL: Record<Status, string> = { waiting: 'Ready to call', in: 'In cabin', pending: 'Awaiting result', selected: 'Selected', rejected: 'Rejected', absent: 'Absent' };
 export const RES: Record<Result, string> = { done: 'Done', reject: 'Rejected', 'no-show': 'No show', moved: 'Moved' };
 
 export const LOCATIONS = ['AB5 near PCOM Office', 'J Block Interview Cabins'];
+export const KINDS: Record<Kind, string> = { I: 'Internship', P: 'Placement', 'I+P': 'Internship + Placement' };
+// a drive's phases always run in this order
+export const PHASES: Record<PhaseKey, string> = { ppt: 'Pre-placement talk', oa: 'Online assessment', int: 'Interviews' };
+export const ORDER = Object.keys(PHASES) as PhaseKey[];
+export const SHORT: Record<PhaseKey, string> = { ppt: 'PPT', oa: 'OA', int: 'interviews' };
+// the usual places for each phase, offered as suggestions (any place can be typed); any phase can also be virtual,
+// and then its attendance is optional
+export const VIRTUAL = 'Virtual';
+export const isVirtual = (venue: string) => venue.trim().toLowerCase() === 'virtual';
+const PLACES: Record<PhaseKey, string[]> = { ppt: ['AB4 Auditorium', 'AB5 Auditorium', '103, AB5'], oa: ['4th Floor Labs, AB5'], int: LOCATIONS };
+export const venuesOf = (k: PhaseKey) => [...PLACES[k], VIRTUAL];
+const LENGTH = 2 * 3600_000; // a PPT ends this long after it starts unless ended earlier; an OA runs until it is ended
+export const startOf = (p: Phase) => Date.parse(p.at.length > 10 ? p.at : `${p.at}T00:00`);
+export const endOf = (p: Phase) => p.ended ?? (p.k === 'ppt' ? startOf(p) + LENGTH : Infinity);
+// Who may take part in phase k: everyone on the drive's list, less anyone absent at an earlier phase who wasn't made eligible again.
+export function eligible(d: Drive, k: PhaseKey): Pupil[] {
+  const before = phasesOf(d).filter(p => ORDER.indexOf(p.k) < ORDER.indexOf(k) && p.roll);
+  return (d.pool ?? []).filter(s => before.every(p => !(s.id in p.roll!) || p.excused?.includes(s.id)));
+}
+// students who missed a PPT or OA and weren't made eligible after it, with the one they missed (they never reach the interviews)
+export const missed = (d: Drive) => (d.pool ?? []).flatMap(s => {
+  const p = phasesOf(d).find(p => p.k !== 'int' && p.roll && s.id in p.roll && !p.excused?.includes(s.id));
+  return p ? [{ s, k: p.k, reason: p.roll![s.id] }] : [];
+});
+// where an interview student was marked absent: at the interviews' attendance, or later, when due for a round
+export const absentAt = (d: Drive, s: Student) => !d.attendance || s.t <= d.attendance ? 'Interview attendance' : rname(d, s.done);
+// ponytail: fixed list for now; make it editable when the committee changes
+export const VOLUNTEERS = ['Aditi Rao', 'Karthik Menon', 'Nandini Shetty', 'Rahul Iyer', 'Sneha Pai'];
+// drives from before phases are just their interviews
+export const phasesOf = (d: Drive): Phase[] => d.phases?.map(p => ({ ...p, crew: p.crew ?? [] })) ?? [{ k: 'int', venue: d.location, at: d.date, crew: [] }];
+
+// A drive's type and phases (in order, each once, each later than the one before, with its volunteers), as sent from the page.
+export function cleanPlan(p: Partial<Plan>): Omit<Plan, 'students'> {
+  if (!(String(p?.kind) in KINDS)) throw Error('Pick the type of drive');
+  const at = (v: unknown) => /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2})?$/.test(String(v)) && isDate(String(v).slice(0, 10)) ? String(v) : '';
+  const given = Array.isArray(p.phases) ? p.phases : [];
+  const phases = ORDER.flatMap(k => given.filter(x => x?.k === k).slice(0, 1)).map(x => ({
+    k: x.k, venue: String(x.venue ?? '').trim().slice(0, 80), at: at(x.at), // '' until it is decided
+    crew: [...new Set(Array.isArray(x.crew) ? x.crew : [])].filter(n => VOLUNTEERS.includes(n)), // each volunteer once per phase
+  }));
+  if (!phases.length) throw Error('Pick at least one phase');
+  const missing = phases.find(x => !x.at);
+  if (missing) throw Error(`Pick the date and time of the ${PHASES[missing.k].toLowerCase()}`);
+  // the talk comes first and the interviews last: each phase after the one before it
+  const early = phases.findIndex((x, i) => i > 0 && x.at <= phases[i - 1].at);
+  if (early > 0) throw Error(`The ${PHASES[phases[early].k].toLowerCase()} has to be after the ${PHASES[phases[early - 1].k].toLowerCase()}`);
+  return { kind: p.kind as Kind, phases };
+}
+// Where each phase stands at `now`. A phase goes live at its start time: a talk or test until it is ended (a talk after
+// two hours at most), interviews while their board runs; interviews whose time has come are ready to start. A phase is
+// done once it has ended or a later phase has begun.
+export type PhaseState = 'Upcoming' | 'Today' | 'Live' | 'Done';
+export function phaseStates(d: Drive, now: number): PhaseState[] {
+  const today = localDate(now);
+  const own = phasesOf(d).map((p): PhaseState => {
+    if (p.k === 'int' && d.status === 'done') return 'Done';
+    if (p.k === 'int') return called(d) ? 'Live' : p.at.slice(0, 10) === today ? 'Today' : 'Upcoming'; // their time is only a reference: they start with the first student called
+    if (p.k === 'oa') return p.ended ? 'Done' : p.roll ? 'Live' : p.at.slice(0, 10) === today ? 'Today' : 'Upcoming'; // likewise: live once its attendance starts, until it is ended
+    if (now < startOf(p)) return p.at.slice(0, 10) === today ? 'Today' : 'Upcoming';
+    return now < endOf(p) ? 'Live' : 'Done';
+  });
+  return own.map((s, i) => own.slice(i + 1).some(x => x !== 'Upcoming' && x !== 'Today') ? 'Done' : s);
+}
+export const called = (d: Drive) => d.students.some(s => s.hist.length);
+// a phase can be removed until it begins, and none once the interviews' attendance (or dashboard) has opened
+export const removable = (d: Drive, s: PhaseState) => (s === 'Upcoming' || s === 'Today') && d.status === 'planned';
+// phases can be added until the interviews' attendance (or dashboard) opens
+export const canAdd = (d: Drive) => d.status === 'planned' || !phasesOf(d).some(p => p.k === 'int');
+// the calendar shows a drive on its interview day, or on its first phase when it has no interviews
+const dayOf = (p: Phase[]) => (p.find(x => x.k === 'int') ?? p[0]).at.slice(0, 10);
 
 export const allRounds = (n: number) => [...Array(n).keys()];
 const pad = (n: number) => String(n).padStart(2, '0');
@@ -95,15 +182,6 @@ export function alsoIn(d: Drive, others: Drive[]): Record<string, Also[]> {
       at: Math.max(s.t, h?.out ?? h?.in ?? 0),
     });
   }
-  return out;
-}
-
-// Students already selected in a drive, by registration number: a new drive leaves them out unless the desk keeps them.
-export type Placed = Record<string, { company: string; date: string }>;
-export function placedIn(drives: Drive[]): Placed {
-  const out: Placed = {};
-  for (const d of [...drives].sort((a, b) => a.date.localeCompare(b.date))) // the first offer is the one that counts
-    for (const s of d.students) if (s.reg && s.status === 'selected') out[s.reg] ??= { company: d.company, date: d.date };
   return out;
 }
 
@@ -184,13 +262,29 @@ export function parseStudents(table: string[][]): Row[] {
   })).filter(x => x.name);
 }
 
+// one student from an uploaded row, and the key that tells two apart: the registration number, else name and campus
+const rowOf = (raw: Partial<Row>): Row => ({ reg: regOf(raw?.reg), name: String(raw?.name ?? '').replace(/\s+/g, ' ').trim().slice(0, 120), campus: campusOf(raw?.campus) });
+const keyOf = (x: Row) => x.reg || `${x.name.toLowerCase()}|${x.campus}`;
+
 // A drive booked for a later day: only the company and date. Rounds, cabins and students are added on the day ('setup').
-export function planDrive(c: { company: string; date: string; location: string }, id: string, t = Date.now()): Drive {
+export function planDrive(c: { company: string; date?: string; location?: string; plan?: Plan }, id: string, t = Date.now()): Drive {
   const company = String(c?.company ?? '').trim().slice(0, 80);
   if (!company) throw Error('Enter the company name');
+  if (c.plan) {
+    const plan = cleanPlan(c.plan), date = dayOf(plan.phases);
+    const d: Drive = { ...fresh(), id, company, date, location: plan.phases.find(x => x.k === 'int')?.venue ?? '', status: 'planned', startedAt: t, ...plan, pool: [], log: [{ t, msg: `Drive created for ${date}` }] };
+    const seen = new Set<string>();
+    for (const raw of (Array.isArray(c.plan.students) ? c.plan.students : []).slice(0, 5000)) {
+      const x = rowOf(raw);
+      if (x.name && !seen.has(keyOf(x))) { seen.add(keyOf(x)); d.pool!.push({ id: String(d.seq++), ...x }) }
+    }
+    if (!d.pool!.length) throw Error('Upload the list of students');
+    d.log.push({ t, msg: `${d.pool!.length} students on the list` });
+    return d;
+  }
   if (!isDate(c.date)) throw Error('Pick a valid date');
-  if (!LOCATIONS.includes(c.location)) throw Error('Pick the location');
-  return { ...fresh(), id, company, date: c.date, location: c.location, status: 'planned', startedAt: t, log: [{ t, msg: `Drive created for ${c.date}` }] };
+  const location = String(c.location ?? '').trim().slice(0, 80); // may be decided later
+  return { ...fresh(), id, company, date: c.date, location, status: 'planned', startedAt: t, log: [{ t, msg: `Drive created for ${c.date}` }] };
 }
 
 // Builds a new drive from the onboarding answers; throws a readable message when something is missing.
@@ -203,7 +297,6 @@ export function newDrive(c: DriveConfig, id: string, t = Date.now()): Drive {
     const takes = cleanRounds(r?.rounds, rounds.length);
     d.rooms.push({ id: String(d.seq++), name: `Cabin ${d.rooms.length + 1}`, panel: String(r?.panel ?? '').trim().slice(0, 60), rounds: takes.length ? takes : allRounds(rounds.length) });
   }
-  if (!d.rooms.length) throw Error('Add at least one cabin');
   d.log.push({ t, msg: `Drive started: ${company}` });
   if (Array.isArray(c.students) && c.students.length) apply(d, { type: 'addStudents', rows: c.students }, t);
   return d;
@@ -211,10 +304,11 @@ export function newDrive(c: DriveConfig, id: string, t = Date.now()): Drive {
 
 // Small per-drive numbers for the dashboard and calendar.
 export function summary(d: Drive) {
-  const n = (f: (s: Student) => boolean) => d.students.filter(f).length;
+  const n = (f: (s: Student) => boolean) => d.students.filter(f).length, st = phaseStates(d, Date.now());
   return {
-    id: d.id, company: d.company, date: d.date, location: d.location, status: d.status, startedAt: d.startedAt, endedAt: d.endedAt,
-    rounds: d.rounds.length, rooms: d.rooms.length, students: d.students.length,
+    phases: phasesOf(d).map((p, i) => ({ k: p.k, at: p.at, venue: p.venue, state: st[i] })), // each shows on the calendar on its own day
+    id: d.id, company: d.company, kind: d.kind, date: d.date, location: d.location, status: d.status, startedAt: d.startedAt, endedAt: d.endedAt,
+    rounds: d.rounds.length, rooms: d.rooms.length, students: d.pool?.length ?? d.students.length,
     blr: n(s => s.campus === 'BLR'), mpl: n(s => s.campus === 'MPL'),
     inCabin: n(s => s.status === 'in'), awaiting: n(s => s.status === 'pending'),
     attendance: !!d.attendance, selected: n(s => s.status === 'selected'), blrSelected: n(s => s.status === 'selected' && s.campus === 'BLR'), rejected: n(s => s.status === 'rejected'),
@@ -279,7 +373,9 @@ export function apply(d: Drive, a: Action, t = Date.now()): string | undefined {
   const log = (msg: string) => { d.log.push({ t, msg }) };
   const newRoom = (name: string): Room => ({ id: String(d.seq++), name, panel: '', rounds: allRounds(d.rounds.length) });
 
-  if (d.status === 'planned' && !['company', 'date', 'location', 'setup'].includes(a.type)) throw Error('Set up this drive first');
+  // before the interviews: the drive's plan, its talk and test, and the interviews' rounds and cabins
+  if (d.status === 'planned' && !['date', 'location', 'setup', 'start', 'plan', 'phaseRoll', 'endPhase', 'excuse', 'reason', 'renameRound', 'addRound', 'delRound',
+    'roomRounds', 'editRoom', 'addRoom', 'delRoom', 'setRooms'].includes(a.type)) throw Error('Set up this drive first');
   let msg: string | undefined;
   switch (a.type) {
     case 'call': {
@@ -289,7 +385,8 @@ export function apply(d: Drive, a: Action, t = Date.now()): string | undefined {
       if (!fits(r, s)) throw Error(`${r.name} doesn't take ${rname(d, s.done)}`);
       if (s.status !== 'waiting' && s.status !== 'absent') throw Error(`${s.name} is ${LABEL[s.status].toLowerCase()}`);
       if (s.done >= d.rounds.length) throw Error(`${s.name} has finished every round`);
-      // calling = sent into the cabin; the interview starts now
+      // calling = sent into the cabin; the interview starts now, and the interviews with the first one
+      if (!called(d)) d.startedAt = t;
       Object.assign(s, { status: 'in', room: r.id, t });
       s.hist.push({ r: s.done, room: r.name, call: t, in: t });
       log(`${s.name} → ${r.name} (${rname(d, s.done)})`);
@@ -310,6 +407,13 @@ export function apply(d: Drive, a: Action, t = Date.now()): string | undefined {
       if (a.to !== 'absent') delete s.reason;
       Object.assign(s, { room: null, t, status: a.to });
       log(`${s.name}: ${statusLabel(d, s)}`);
+      break;
+    }
+    case 'results': { // one result for several students awaiting theirs: cleared (on to the next round, or selected after the last) or rejected
+      const L = d.rounds.length, l = a.ids.map(st).filter(s => s.status === 'pending' || (s.status === 'waiting' && s.done >= L));
+      if (!l.length) throw Error('Nobody is awaiting a result');
+      for (const s of l) Object.assign(s, { t, status: !a.pass ? 'rejected' : s.done >= L ? 'selected' : 'waiting' });
+      log(`${l.length} ${a.pass ? 'cleared' : 'rejected'} after ${rname(d, l[0].done - 1)}`);
       break;
     }
     case 'setDone': {
@@ -335,9 +439,19 @@ export function apply(d: Drive, a: Action, t = Date.now()): string | undefined {
     }
     case 'addRoom': d.rooms.push(newRoom(`Cabin ${d.rooms.length + 1}`)); log('Cabin added'); break;
     case 'delRoom': { const r = rm(a.room); if (occ(d, r)) throw Error(`${r.name} has a student in it`); d.rooms = d.rooms.filter(x => x !== r); log(`${r.name} removed`); break }
-    case 'company': d.company = String(a.name).trim().slice(0, 80) || d.company; break;
     case 'date': if (!isDate(a.date)) throw Error('Pick a valid date'); d.date = a.date; log(`Date set to ${a.date}`); break;
-    case 'location': if (!LOCATIONS.includes(a.location)) throw Error('Pick the location'); d.location = a.location; log(`Location: ${a.location}`); break;
+    case 'location': { const l = String(a.location ?? '').trim().slice(0, 80); if (!l) throw Error('Pick the location'); d.location = l; log(`Location: ${l}`); break }
+    case 'plan': {
+      const p = cleanPlan(a.plan), int = p.phases.find(x => x.k === 'int');
+      // a phase can be removed until it begins: after that its attendance (or its interviews) count
+      const now = phaseStates(d, t), gone = phasesOf(d).find((x, i) => !p.phases.some(y => y.k === x.k) && !removable(d, now[i]));
+      if (gone) throw Error(`The ${PHASES[gone.k].toLowerCase()} has begun, so it stays`);
+      if (p.phases.length > phasesOf(d).length && !canAdd(d)) throw Error('The interviews have begun, so no more phases can be added');
+      const was = phasesOf(d);
+      Object.assign(d, p, { kind: d.kind ?? p.kind, phases: p.phases.map(x => ({ ...was.find(o => o.k === x.k), ...x })) }); // the type of offer is fixed once set; attendance stays
+      if (d.status === 'planned') { d.date = dayOf(p.phases); if (int?.venue) d.location = int.venue }
+      log('Drive plan updated'); break;
+    }
     case 'renameRound': if (d.rounds[a.i] != null) d.rounds[a.i] = String(a.name).slice(0, 40); break;
     case 'addRound': {
       const n = d.rounds.length;
@@ -347,21 +461,24 @@ export function apply(d: Drive, a: Action, t = Date.now()): string | undefined {
       log('Round added'); break;
     }
     case 'delRound': {
-      const L = d.rounds.length - 1; if (L < 1) throw Error('At least one round is needed');
-      if (d.students.some(s => s.done > L || s.hist.some(h => h.r === L))) throw Error('Students have already reached that round');
-      d.rounds.pop();
-      d.rooms.forEach(r => { r.rounds = r.rounds.filter(i => i < L); if (!r.rounds.length) r.rounds = allRounds(L) });
-      log('Last round removed'); break;
+      const n = d.rounds.length, k = a.i ?? n - 1;
+      if (n < 2) throw Error('At least one round is needed');
+      if (!(k >= 0 && k < n)) throw Error('Round not found');
+      if (d.students.some(s => s.done > k || s.hist.some(h => h.r >= k))) throw Error('Students have already reached that round');
+      const gone = rname(d, k);
+      d.rounds.splice(k, 1);
+      // the rounds after it move up one; cabins that took every round still do
+      d.rooms.forEach(r => { r.rounds = r.rounds.length === n ? allRounds(n - 1) : r.rounds.filter(x => x !== k).map(x => x > k ? x - 1 : x); if (!r.rounds.length) r.rounds = allRounds(n - 1) });
+      log(`${gone} removed`); break;
     }
     case 'addStudents': {
       if (!Array.isArray(a.rows)) throw Error('No students given');
-      const key = (x: Row) => x.reg || `${x.name.toLowerCase()}|${x.campus}`; // the registration number identifies a student
-      const have = new Set(d.students.map(key)); let n = 0, dup = 0;
+      const have = new Set(d.students.map(keyOf)); let n = 0, dup = 0;
       for (const raw of a.rows.slice(0, 5000)) {
-        const x: Row = { reg: regOf(raw?.reg), name: String(raw?.name ?? '').replace(/\s+/g, ' ').trim().slice(0, 120), campus: campusOf(raw?.campus) };
+        const x = rowOf(raw);
         if (!x.name) continue;
-        if (have.has(key(x))) { dup++; continue }
-        have.add(key(x));
+        if (have.has(keyOf(x))) { dup++; continue }
+        have.add(keyOf(x));
         d.students.push({ id: String(d.seq++), ...x, done: 0, status: 'waiting', t: t + n++, room: null, hist: [] });
       }
       if (!n && !dup) throw Error('No names found');
@@ -370,10 +487,48 @@ export function apply(d: Drive, a: Action, t = Date.now()): string | undefined {
       break;
     }
     case 'clearStudents': if (d.students.some(s => s.status === 'in')) throw Error('Someone is still in a cabin'); d.students = []; log('All students removed'); break;
+    case 'start': {
+      if (d.status !== 'planned') throw Error('The interviews have already started');
+      apply(d, { type: 'setup', config: { company: d.company, date: d.date, location: d.location, rounds: d.rounds, rooms: d.rooms, students: [] } }, t);
+      d.roll = {}; // straight into their attendance, like a PPT's or OA's
+      break;
+    }
     case 'setup': {
       if (d.status !== 'planned') throw Error('This drive is already set up');
-      const n = newDrive(a.config, d.id, t);
+      // only rounds and cabins are new: the details are the drive's, and the students those still eligible
+      const n = newDrive({ ...a.config, company: d.company, date: d.date, location: d.location, students: d.pool ? eligible(d, 'int') : a.config.students }, d.id, t);
       Object.assign(d, n, { log: [...d.log, ...n.log] });
+      break;
+    }
+    case 'phaseRoll': case 'endPhase': case 'excuse': {
+      const p = d.phases?.find(x => x.k === a.k && x.k !== 'int'), what = SHORT[a.k];
+      if (!p) throw Error('Phase not found');
+      if (a.type === 'excuse') {
+        if (!p.roll || !(a.id in p.roll)) throw Error('Only students absent at it need this');
+        if (!p.excused?.includes(a.id)) (p.excused ??= []).push(a.id);
+        const s = d.pool!.find(x => x.id === a.id)!;
+        log(`${s.name} made eligible after missing the ${what}`);
+        // the interviews have begun and now take them: they join the list there
+        if (d.status !== 'planned' && eligible(d, 'int').includes(s)) apply(d, { type: 'addStudents', rows: [s] }, t);
+        break;
+      }
+      if (p.k === 'ppt' && t < startOf(p)) throw Error(`The ${what} hasn't started yet`);
+      // an OA's attendance can start whenever, once the phases before it (who may take it) are over
+      if (a.type === 'phaseRoll' && !p.roll) { const st = phaseStates(d, t), on = phasesOf(d).findIndex(x => x.k === a.k); if (st.slice(0, on).some(x => x !== 'Done')) throw Error(`End the ${SHORT[phasesOf(d)[on - 1].k]} first`) }
+      if (t >= endOf(p)) throw Error(`The ${what} has ended`);
+      if (a.type === 'endPhase') {
+        if (!p.roll && !isVirtual(p.venue)) throw Error(`Take attendance before ending the ${what}. Only a virtual ${what} can end without it`);
+        const off = Object.keys(p.roll ??= {}).length;
+        p.ended = t;
+        log(`${what} ended: ${eligible(d, a.k).length - off} present, ${off} absent`);
+        break;
+      }
+      const roll = p.roll ??= {};
+      if (a.id != null) {
+        if (!eligible(d, a.k).some(s => s.id === a.id)) throw Error('Student not found');
+        if (a.absent) roll[a.id] = String(a.reason ?? roll[a.id] ?? '').slice(0, 200);
+        else delete roll[a.id];
+      }
       break;
     }
     case 'roll': { // saved as it is taken, so a refresh or a second device carries on from the same place
@@ -386,7 +541,7 @@ export function apply(d: Drive, a: Action, t = Date.now()): string | undefined {
       }
       break;
     }
-    case 'attendance': {
+    case 'attendance': { // confirmed: final, and the dashboard opens; the interviews start with the first call, which needs a cabin
       if (d.attendance) throw Error('Attendance has already been taken');
       let off = 0;
       for (const [id, why] of Object.entries(d.roll ?? {})) {
@@ -401,7 +556,9 @@ export function apply(d: Drive, a: Action, t = Date.now()): string | undefined {
       break;
     }
     case 'reason': {
-      const s = st(a.id), why = String(a.reason ?? '').trim().slice(0, 200);
+      const why = String(a.reason ?? '').trim().slice(0, 200), p = a.k && d.phases?.find(x => x.k === a.k && x.k !== 'int');
+      if (a.k) { if (!p || !p.roll || !(a.id in p.roll)) throw Error('Only students absent at it have a reason'); p.roll[a.id] = why; break }
+      const s = st(a.id);
       if (s.status !== 'absent') throw Error(`${s.name} is not marked absent`);
       if (why) s.reason = why; else delete s.reason;
       break;

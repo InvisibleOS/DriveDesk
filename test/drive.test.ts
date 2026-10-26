@@ -1,7 +1,7 @@
 // npm test — onboarding, CSV import, the call → finish → result flow, ending a drive, and old saves upgrading
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { alsoIn, apply, forecast, placedIn, fits, migrate, upNext, newDrive, parseStudents, planDrive, roundOpen, statusLabel, summary, toTable, waiting, type Action, type DriveConfig } from '../lib/drive.ts';
+import { absentAt, alsoIn, apply, missed, forecast, fits, migrate, upNext, newDrive, parseStudents, planDrive, roundOpen, statusLabel, summary, toTable, VOLUNTEERS, phaseStates, eligible, waiting, type Action, type DriveConfig } from '../lib/drive.ts';
 
 const cfg = (over: Partial<DriveConfig> = {}): DriveConfig => ({
   company: 'Optum', date: '2026-10-23', location: 'J Block Interview Cabins', rounds: ['Tech', 'HR', 'Final'],
@@ -17,8 +17,6 @@ test('onboarding builds a drive', () => {
   assert.deepEqual([d.status, d.location], ['live', 'J Block Interview Cabins']);
   assert.throws(() => newDrive(cfg({ company: ' ' }), 'x'), /company/);
   assert.throws(() => newDrive(cfg({ date: '23/10/2026' }), 'x'), /date/);
-  assert.throws(() => newDrive(cfg({ rooms: [] }), 'x'), /cabin/);
-  assert.throws(() => newDrive(cfg({ location: 'Library' }), 'x'), /location/);
 });
 
 test('student list keeps only registration number, name and campus', () => {
@@ -90,6 +88,106 @@ test('a drive booked for a later day is set up on the day', () => {
   assert.throws(() => apply(d, { type: 'setup', config: cfg() }), /already set up/);
 });
 
+test('a configured drive keeps its phases in order and is set up for interviews on the day', () => {
+  const plan = { kind: 'P' as const, phases: [{ k: 'int' as const, venue: 'J Block Interview Cabins', at: '2026-11-03T10:00', crew: [] },
+    { k: 'ppt' as const, venue: 'AB4 Auditorium', at: '2026-11-01T09:00', crew: [VOLUNTEERS[0], VOLUNTEERS[0], 'Somebody else', VOLUNTEERS[1]] }, { k: 'int' as const, venue: '', at: '2026-11-09T10:00', crew: [] }], students: [{ reg: '', name: 'Asha', campus: 'BLR' as const }] };
+  const d = planDrive({ company: 'Optum', plan }, 'p', 1000);
+  assert.deepEqual(d.phases!.map(p => p.k), ['ppt', 'int'], 'fixed order, each phase once');
+  assert.deepEqual([d.status, d.date, d.location, d.kind], ['planned', '2026-11-03', 'J Block Interview Cabins', 'P'], 'on the calendar on interview day');
+  assert.deepEqual(d.phases![0].crew, [VOLUNTEERS[0], VOLUNTEERS[1]], 'each volunteer once per phase; unknown names dropped');
+  assert.throws(() => planDrive({ company: 'Optum', plan: { ...plan, kind: 'X' as never } }, 'p'), /type/);
+  assert.throws(() => planDrive({ company: 'Optum', plan: { ...plan, phases: [{ k: 'oa', venue: '', at: '', crew: [] }] } }, 'p'), /online assessment/);
+  assert.throws(() => planDrive({ company: 'Optum', plan: { ...plan, phases: [plan.phases[0], { ...plan.phases[1], at: '2026-11-03T10:00' }] } }, 'p'), /interviews has to be after the pre-placement talk/, 'same time is not after');
+  assert.throws(() => apply(planDrive({ company: 'Optum', plan }, 'q'), { type: 'plan', plan: { ...plan, phases: [plan.phases[1], { k: 'oa', venue: '', at: '2026-10-31T10:00', crew: [] }, plan.phases[0]] } }), /online assessment has to be after/);
+  apply(d, { type: 'plan', plan: { ...plan, phases: [{ k: 'oa', venue: 'Virtual', at: '2026-11-02', crew: [] }, ...d.phases!] } });
+  assert.deepEqual(d.phases!.map(p => p.k), ['ppt', 'oa', 'int'], 'a phase added later goes in its place');
+  apply(d, { type: 'plan', plan: { kind: 'I', phases: d.phases! } });
+  assert.equal(d.kind, 'P', 'the type of offer is fixed once the drive is created');
+  apply(d, { type: 'setup', config: cfg({ company: 'Renamed', date: '2026-11-03' }) }, 2000);
+  assert.deepEqual([d.status, d.phases!.length, d.kind, d.company], ['live', 3, 'P', 'Optum'], 'setting up the interviews keeps the plan');
+  assert.throws(() => apply(d, { type: 'plan', plan: { ...plan, phases: d.phases!.filter(p => p.k !== 'oa') } }), /online assessment has begun, so it stays/, 'the interviews began, so the phases before them are over');
+  const e = planDrive({ company: 'Optum', plan }, 'e');
+  apply(e, { type: 'plan', plan: { ...plan, phases: [plan.phases[0]] } }, 0);
+  assert.deepEqual(e.phases!.map(p => p.k), ['int'], 'a phase that has not begun can be removed');
+});
+
+test('a phase goes live at its start time and is done once it ends or the next one begins', () => {
+  const at = (s: string) => Date.parse(s);
+  const d = planDrive({ company: 'Optum', plan: { kind: 'P', phases: [{ k: 'ppt', venue: '', at: '2026-11-01T10:00', crew: [] }, { k: 'oa', venue: '', at: '2026-11-02T14:00', crew: [] }, { k: 'int', venue: '', at: '2026-11-04T09:30', crew: [] }], students: [{ reg: '', name: 'Asha', campus: 'BLR' }] } }, 'p');
+  assert.deepEqual(phaseStates(d, at('2026-10-30T12:00')), ['Upcoming', 'Upcoming', 'Upcoming']);
+  assert.deepEqual(phaseStates(d, at('2026-11-01T09:59')), ['Today', 'Upcoming', 'Upcoming']);
+  assert.deepEqual(phaseStates(d, at('2026-11-01T10:00')), ['Live', 'Upcoming', 'Upcoming'], 'live at its start time');
+  assert.deepEqual(phaseStates(d, at('2026-11-01T11:59')), ['Live', 'Upcoming', 'Upcoming']);
+  assert.deepEqual(phaseStates(d, at('2026-11-01T12:00')), ['Done', 'Upcoming', 'Upcoming'], 'a talk ends two hours after it starts');
+  assert.deepEqual(phaseStates(d, at('2026-11-02T08:00')), ['Done', 'Today', 'Upcoming']);
+  assert.deepEqual(phaseStates(d, at('2026-11-02T14:30')), ['Done', 'Today', 'Upcoming'], 'an OA\'s time is only a reference');
+  assert.throws(() => apply(d, { type: 'phaseRoll', k: 'oa' }, at('2026-11-01T11:00')), /End the PPT first/, 'not while the PPT runs');
+  apply(d, { type: 'phaseRoll', k: 'oa' }, at('2026-11-02T13:00'));
+  assert.deepEqual(phaseStates(d, at('2026-11-02T13:01')), ['Done', 'Live', 'Upcoming'], 'live once its attendance starts, before its time too');
+  assert.deepEqual(phaseStates(d, at('2026-11-04T10:00')), ['Done', 'Live', 'Today'], 'an OA stays live until it is ended');
+  apply(d, { type: 'endPhase', k: 'oa' }, at('2026-11-04T09:00'));
+  apply(d, { type: 'setup', config: cfg({ company: 'Optum', date: '2026-11-04' }) });
+  assert.deepEqual(phaseStates(d, at('2026-11-04T10:00')), ['Done', 'Done', 'Today'], 'set up, nobody called yet');
+  apply(d, { type: 'attendance' }, at('2026-11-04T10:00'));
+  apply(d, { type: 'call', id: d.students[0].id, room: d.rooms[0].id }, at('2026-11-04T10:05'));
+  assert.deepEqual(phaseStates(d, at('2026-11-04T10:06')), ['Done', 'Done', 'Live'], 'live with the first student called');
+  assert.equal(d.startedAt, at('2026-11-04T10:05'));
+  apply(d, { type: 'out', id: d.students[0].id });
+  apply(d, { type: 'finish' });
+  assert.deepEqual(phaseStates(d, at('2026-11-04T18:00')), ['Done', 'Done', 'Done']);
+});
+
+test('only students present at the earlier phases go on, unless made eligible', () => {
+  const at = (s: string) => Date.parse(s);
+  const plan = { kind: 'P' as const, phases: [{ k: 'ppt' as const, venue: '', at: '2026-11-01T10:00', crew: [] }, { k: 'oa' as const, venue: '', at: '2026-11-02T14:00', crew: [] }, { k: 'int' as const, venue: '', at: '2026-11-04T09:30', crew: [] }],
+    students: [{ reg: '', name: 'Asha', campus: 'BLR' as const }, { reg: '', name: 'Ben', campus: 'MPL' as const }, { reg: '', name: 'Cy', campus: 'BLR' as const }, { reg: '', name: ' asha ', campus: 'BLR' as const }] };
+  assert.throws(() => planDrive({ company: 'Optum', plan: { ...plan, students: [] } }, 'p'), /list of students/);
+  const d = planDrive({ company: 'Optum', plan }, 'p'), [, b, c] = d.pool!;
+  const online0 = planDrive({ company: 'Optum', plan: { ...plan, phases: [plan.phases[2]] } }, 'q');
+  assert.equal(d.pool!.length, 3, 'the same student twice is kept once');
+  assert.throws(() => apply(d, { type: 'phaseRoll', k: 'ppt' }, at('2026-11-01T09:00')), /hasn't started/);
+  assert.throws(() => apply(d, { type: 'endPhase', k: 'ppt' }, at('2026-11-01T10:01')), /Take attendance before ending the PPT/, 'in person, attendance is required');
+  apply(d, { type: 'phaseRoll', k: 'ppt' }, at('2026-11-01T10:05'));
+  apply(d, { type: 'phaseRoll', k: 'ppt', id: b.id, absent: true, reason: 'Unwell' }, at('2026-11-01T10:06'));
+  apply(d, { type: 'phaseRoll', k: 'ppt', id: c.id, absent: true }, at('2026-11-01T10:07'));
+  apply(d, { type: 'endPhase', k: 'ppt' }, at('2026-11-01T11:00'));
+  assert.throws(() => apply(d, { type: 'phaseRoll', k: 'ppt', id: c.id }, at('2026-11-01T11:01')), /PPT has ended/, 'attendance is final once it ends');
+  apply(d, { type: 'reason', k: 'ppt', id: c.id, reason: ' Clash with exam ' }, at('2026-11-03T09:00'));
+  assert.equal(d.phases![0].roll![c.id], 'Clash with exam', 'a reason can be given after it ends');
+  assert.throws(() => apply(d, { type: 'reason', k: 'ppt', id: d.pool![0].id, reason: 'x' }), /Only students absent/);
+  assert.deepEqual(eligible(d, 'oa').map(s => s.name), ['Asha']);
+  apply(d, { type: 'excuse', k: 'ppt', id: c.id });
+  assert.deepEqual(eligible(d, 'oa').map(s => s.name), ['Asha', 'Cy'], 'made eligible');
+  assert.throws(() => apply(d, { type: 'phaseRoll', k: 'oa', id: b.id, absent: true }, at('2026-11-02T14:10')), /Student not found/, 'not eligible, not on the roll');
+  apply(d, { type: 'phaseRoll', k: 'oa', id: c.id, absent: true }, at('2026-11-02T14:10'));
+  apply(d, { type: 'phaseRoll', k: 'oa', id: c.id, reason: 'late' }, at('2026-11-02T19:00')); apply(d, { type: 'phaseRoll', k: 'oa', id: c.id, absent: true }, at('2026-11-02T19:01'));
+  apply(d, { type: 'endPhase', k: 'oa' }, at('2026-11-02T19:30'));
+  assert.throws(() => apply(d, { type: 'phaseRoll', k: 'oa', id: c.id }, at('2026-11-02T19:31')), /OA has ended/, 'an OA runs until it is ended, however long');
+  apply(d, { type: 'setup', config: cfg({ company: 'Optum', date: '2026-11-04' }) });
+  assert.deepEqual(d.students.map(s => s.name), ['Asha'], 'the interviews take the students still eligible');
+  assert.equal(d.attendance, undefined, 'their own roll call, of those present at the earlier phases');
+  assert.deepEqual(missed(d).map(m => [m.s.name, m.k]), [['Ben', 'ppt'], ['Cy', 'oa']], 'absent at the PPT or OA, and where');
+  apply(d, { type: 'attendance' });
+  apply(d, { type: 'call', id: d.students[0].id, room: d.rooms[0].id });
+  apply(d, { type: 'excuse', k: 'oa', id: c.id });
+  assert.deepEqual(d.students.map(s => s.name), ['Asha', 'Cy'], 'made eligible once the interviews are set up: joins them');
+  apply(online0, { type: 'plan', plan: { ...plan, phases: [plan.phases[1], plan.phases[2]] } }, at('2026-11-04T09:29'));
+  const online = planDrive({ company: 'Optum', plan: { ...plan, phases: [{ ...plan.phases[0], venue: ' virtual ' }] } }, 'o');
+  apply(online, { type: 'endPhase', k: 'ppt' }, at('2026-11-01T10:30'));
+  assert.equal(eligible(online, 'int').length, 3, 'a virtual PPT can end without attendance: everyone stays eligible');
+  const solo = planDrive({ company: 'Optum', plan: { kind: 'P', phases: [plan.phases[2]], students: plan.students } }, 's');
+  apply(solo, { type: 'setup', config: cfg() });
+  assert.equal(solo.attendance, undefined, 'interviews with nothing before them still take attendance');
+});
+
+test('any round can be removed before anyone reaches it; the cabins follow', () => {
+  const d = newDrive(cfg({ rooms: [{ rounds: [0, 2] }, { rounds: [1] }, { rounds: [0, 1, 2] }] }), 'x');
+  apply(d, { type: 'delRound', i: 1 });
+  assert.deepEqual([d.rounds, d.rooms.map(r => r.rounds)], [['Tech', 'Final'], [[0, 1], [0, 1], [0, 1]]], 'Final moves up; a cabin left with none takes every round');
+  apply(d, { type: 'attendance' }); apply(d, { type: 'call', id: d.students[0].id, room: d.rooms[0].id });
+  assert.throws(() => apply(d, { type: 'delRound', i: 0 }), /already reached/);
+});
+
 test('a round with every cabin busy cannot be called', () => {
   const d = newDrive(cfg({ rooms: [{ rounds: [0] }, { rounds: [1] }] }), 'x');
   assert.ok(roundOpen(d, 0));
@@ -109,6 +207,7 @@ test('attendance marks the missing students absent, once', () => {
   assert.deepEqual(d.roll, { [ben.id]: '  Medical  ' }, 'the list in progress is saved on the drive');
   apply(d, { type: 'attendance' }, 2000);
   assert.deepEqual([asha.status, ben.status, ben.reason, d.attendance, d.roll], ['waiting', 'absent', 'Medical', 2000, undefined]);
+  assert.equal(absentAt(d, ben), 'Interview attendance');
   assert.equal(d.log.at(-1)!.msg, 'Attendance taken: 1 present, 1 absent');
   assert.throws(() => apply(d, { type: 'attendance' }), /already/);
   assert.throws(() => apply(d, { type: 'roll', id: asha.id, absent: true }), /already/);
@@ -173,20 +272,6 @@ test('a student present in two live drives shows up in both', () => {
   assert.deepEqual(alsoIn(optum, [kotak]), {}, 'an ended drive does not count');
 });
 
-test('students selected in an earlier drive are known as placed', () => {
-  const people = [{ reg: '111111111', name: 'Asha', campus: 'BLR' as const }, { reg: '222222222', name: 'Ben', campus: 'MPL' as const }];
-  const early = newDrive(cfg({ company: 'Infosys', date: '2026-10-20', rounds: ['Tech'], students: people }), 'a', 0);
-  const later = newDrive(cfg({ company: 'Deloitte', date: '2026-10-22', rounds: ['Tech'], students: people }), 'b', 0);
-  for (const d of [later, early]) {
-    apply(d, { type: 'attendance' }, 1);
-    const asha = d.students[0].id;
-    apply(d, { type: 'call', id: asha, room: d.rooms[0].id }, 2);
-    apply(d, { type: 'out', id: asha }, 3);
-    apply(d, { type: 'move', id: asha, to: 'selected' }, 4);
-  }
-  assert.deepEqual(placedIn([later, early]), { '111111111': { company: 'Infosys', date: '2026-10-20' } }, 'the first offer counts; Ben was never selected');
-});
-
 test('wait and finish estimates follow the average interview and the free cabins', () => {
   const d = newDrive(cfg({ students: ['A', 'B', 'C', 'D'].map(name => ({ reg: '', name, campus: 'BLR' })) }), 'x', 0);
   const [a, b, c, dd] = d.students, min = 60_000;
@@ -199,4 +284,36 @@ test('wait and finish estimates follow the average interview and the free cabins
   // round 1 takes 10 min; Cabin 1 and Cabin 3 take it, Cabin 2 takes rounds 2 and 3
   assert.deepEqual([b, c, dd, a].map(s => f.wait[s.id] / min), [0, 0, 10, 0], 'B and C go now, D when a round-1 cabin frees up, A to Cabin 2');
   assert.ok(f.done >= 20 * min, 'not done before D finishes');
+});
+
+test('one result for several: only those still awaiting one', () => {
+  const d = newDrive(cfg({ students: [{ name: 'A', campus: 'BLR' }, { name: 'B', campus: 'BLR' }, { name: 'C', campus: 'MPL' }] }), 'x');
+  apply(d, { type: 'attendance' });
+  const [a, b, c] = d.students;
+  for (const s of [a, b, c]) { apply(d, { type: 'call', id: s.id, room: d.rooms[0].id }); apply(d, { type: 'out', id: s.id }) }
+  apply(d, { type: 'move', id: a.id, to: 'rejected' });
+  apply(d, { type: 'results', ids: [a.id, b.id], pass: true });
+  apply(d, { type: 'results', ids: [c.id], pass: false });
+  assert.deepEqual([a, b, c].map(s => s.status), ['rejected', 'waiting', 'rejected']);
+});
+
+test('interviews-only: attendance before their time, live with the first call, and they stay once begun', () => {
+  const at = (s: string) => Date.parse(s);
+  const d = planDrive({ company: 'Optum', plan: { kind: 'P', phases: [{ k: 'int', venue: '', at: '2026-11-04T09:30', crew: [] }], students: [{ reg: '', name: 'Asha', campus: 'BLR' }, { reg: '', name: 'Ben', campus: 'MPL' }] } }, 'q');
+  const ppt = { k: 'ppt' as const, venue: '', at: '2026-11-03T10:00', crew: [] };
+  assert.throws(() => apply(d, { type: 'attendance' }), /Set up/, 'starting them needs their attendance opened');
+  apply(d, { type: 'plan', plan: { kind: 'P', phases: [ppt, ...d.phases!] } }, at('2026-11-05T10:00'));
+  assert.equal(d.phases!.length, 2, 'past their set time, phases can still be added');
+  apply(d, { type: 'plan', plan: { kind: 'P', phases: d.phases!.slice(1) } }, at('2026-11-02T10:00'));
+  apply(d, { type: 'start' }, at('2026-11-04T08:30'));
+  assert.throws(() => apply(d, { type: 'plan', plan: { kind: 'P', phases: [ppt, ...d.phases!] } }), /no more phases/, 'not once their attendance has opened');
+  apply(d, { type: 'attendance' }, at('2026-11-04T08:35'));
+  assert.throws(() => apply(d, { type: 'call', id: d.students[0].id, room: 'none' }), 'confirmed without cabins: no one can be called yet');
+  apply(d, { type: 'addRoom' }, at('2026-11-04T08:36'));
+  assert.deepEqual(phaseStates(d, at('2026-11-04T08:45')), ['Today'], 'attendance taken early: not live yet');
+  apply(d, { type: 'call', id: d.students[0].id, room: d.rooms[0].id }, at('2026-11-04T09:00'));
+  assert.deepEqual(phaseStates(d, at('2026-11-04T09:01')), ['Live']);
+  apply(d, { type: 'move', id: d.students[1].id, to: 'absent' }, at('2026-11-04T09:10'));
+  assert.equal(absentAt(d, d.students[1]), 'Round 1', 'missed when due for a round');
+  assert.equal(d.startedAt, at('2026-11-04T09:00'));
 });

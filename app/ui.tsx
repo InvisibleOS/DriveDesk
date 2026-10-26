@@ -58,9 +58,8 @@ export async function post<T = { msg?: string }>(path: string, body?: unknown, m
 }
 
 // held: the other laptop running this drive; also: student id → where else they are present right now;
-// placed: student id → the earlier drive that already placed them (kept in this one anyway)
 export type Seen = Record<string, Also[]>;
-export type Live = { drive: Drive; undo: string | null; held: string | null; also: Seen; placed: Record<string, { company: string; date: string }> };
+export type Live = { drive: Drive; undo: string | null; held: string | null; also: Seen };
 export type Send = (a: Action | { type: 'undo' } | { type: 'takeOver' }) => Promise<void>;
 type Gate = 'pin' | 'signin';
 const gateOf = (r: Response) => r.json().then(j => (j.gate === 'signin' ? 'signin' : 'pin') as Gate, () => 'pin' as Gate);
@@ -226,19 +225,58 @@ function useOutside(open: boolean, setOpen: (o: boolean) => void, ref: React.Ref
   }, [open, setOpen, ref]);
 }
 
-export function More({ label, items, className = 'icon ghost', down, dot }: { label: string; items: [React.ReactNode, () => void][]; className?: string; down?: boolean; dot?: boolean }) {
+export function More({ label, items, className = 'icon ghost', down, dot, children }: { label: string; items: [React.ReactNode, () => void][]; className?: string; down?: boolean; dot?: boolean; children?: React.ReactNode }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLSpanElement>(null);
   useOutside(open, setOpen, ref);
   return (
     <span ref={ref} className={`kebab${open ? ' open' : ''}`}>
-      <button className={className} title={label} aria-label={label} aria-expanded={open} onClick={e => { e.stopPropagation(); setOpen(!open) }}><Icon n="more" />{dot && <i className="dot" />}</button>
+      <button className={className} title={label} aria-label={label} aria-expanded={open} onClick={e => { e.stopPropagation(); setOpen(!open) }}>{children ?? <Icon n="more" />}{dot && <i className="dot" />}</button>
       {open && <div className={`menu${down ? ' down' : ''}`} role="menu">
         {items.map(([l, f], i) => <button key={i} role="menuitem" onClick={e => { e.stopPropagation(); setOpen(false); f() }}>{l}</button>)}
       </div>}
     </span>
   );
 }
+
+// A large dialog with a title, a count, the page's own buttons and ×; a click on the backdrop closes it.
+// useSheet gives its ref and an opener that lets go of the button's focus first.
+export function useSheet() {
+  const ref = useRef<HTMLDialogElement>(null);
+  return [ref, () => { letGo(); ref.current?.showModal() }] as const;
+}
+export const Sheet = ({ sheet, title, count, tools, className = '', onClose, children }: {
+  sheet: React.RefObject<HTMLDialogElement | null>; title: React.ReactNode; count?: number; tools?: React.ReactNode; className?: string; onClose?: () => void; children: React.ReactNode;
+}) => (
+  <dialog ref={sheet} className={`sheet ${className}`} onClose={onClose} onClick={e => e.target === e.currentTarget && sheet.current?.close()}>
+    <div className="sheet-h"><h2>{title}</h2>{count !== undefined && <span className="cnt">{count}</span>}<div className="sp" />{tools}
+      <button className="icon ghost" onClick={() => sheet.current?.close()} aria-label="Close"><Icon n="x" /></button></div>
+    {children}
+  </dialog>
+);
+
+// The top of a page: an optional eyebrow, the serif title and a line of details; on the right, its numbers or buttons.
+export const PageHead = ({ title, eyebrow, meta, children }: { title: React.ReactNode; eyebrow?: React.ReactNode; meta?: React.ReactNode; children?: React.ReactNode }) => (
+  <div className="phead">
+    <div>{eyebrow && <span className="eyebrow">{eyebrow}</span>}<h1>{title}</h1>{meta}</div>
+    {children}
+  </div>
+);
+
+// One box in a numbers row (.stats): a label in its status colour, a big number and a small note. A button when it opens something.
+export const Stat = ({ label, value, tone = '', sub, onClick, title }: { label: string; value: React.ReactNode; tone?: string; sub?: React.ReactNode; onClick?: () => void; title?: string }) => {
+  const body = <><span>{label}</span><b>{value}{sub != null && <small>{sub}</small>}</b></>;
+  return onClick ? <button className={`stat ${tone}`} onClick={onClick} title={title}>{body}</button> : <div className={`stat ${tone}`} title={title}>{body}</div>;
+};
+
+// − n + : how many of something, one step at a time
+export const Stepper = ({ label, value, min, max, less, more }: { label: string; value: number; min: number; max: number; less: () => void; more: () => void }) => (
+  <div className="stepper" role="group" aria-label={label}>
+    <button className="icon sm ghost" disabled={value <= min} onClick={less} aria-label={`Fewer ${label.toLowerCase()}`}><Icon n="minus" s={14} /></button>
+    <b aria-live="polite">{value}</b>
+    <button className="icon sm ghost" disabled={value >= max} onClick={more} aria-label={`More ${label.toLowerCase()}`}><Icon n="plus" s={14} /></button>
+  </div>
+);
 
 // text input that saves on blur / Enter instead of every keystroke
 export function Field({ value, onSave, ...rest }: { value: string | number; onSave: (v: string) => void } & Omit<React.InputHTMLAttributes<HTMLInputElement>, 'value' | 'onBlur'>) {
@@ -313,17 +351,15 @@ function Pop({ label, icon, tone = '', count, children }: { label: string; icon:
   );
 }
 
-// ⚠ in a drive's top bar, only while something needs the desk's attention: students present in another live drive too
-// (what they are doing in each), and students kept in this drive although they are already placed.
-export function Warnings({ d, also, placed }: { d: Drive; also: Seen; placed: Record<string, { company: string; date: string }> }) {
-  const shared = d.students.filter(s => also[s.id]?.length), kept = d.students.filter(s => placed[s.id]);
-  const n = shared.length + kept.length;
+// ⚠ in a drive's top bar, only while a student here is present in another live drive too: what they are doing in each.
+export function Warnings({ d, also }: { d: Drive; also: Seen }) {
+  const shared = d.students.filter(s => also[s.id]?.length), n = shared.length;
   if (!n) return null;
   const here = (s: Drive['students'][number]) => s.status === 'in' ? `In ${d.rooms.find(r => r.id === s.room)?.name ?? 'a cabin'}` : statusLabel(d, s);
   return (
     <Pop label={`${n} warning${n > 1 ? 's' : ''}`} icon="alert" tone="warn" count={n}>
-      {shared.length > 0 && <section className="pop-s">
-        <b>Also in another live drive · {shared.length}</b>
+      <section className="pop-s">
+        <b>Also in another live drive · {n}</b>
         <p>Check with that desk before calling them.</p>
         <ul>{shared.map(s => (
           <li key={s.id}>
@@ -332,17 +368,7 @@ export function Warnings({ d, also, placed }: { d: Drive; also: Seen; placed: Re
             {also[s.id].map(a => <span key={a.company} className={a.busy ? 'busy' : ''}>{a.company}: {a.status} · {ago(a.at)}</span>)}
           </li>
         ))}</ul>
-      </section>}
-      {kept.length > 0 && <section className="pop-s">
-        <b>Already placed · {kept.length}</b>
-        <p>Kept in this drive anyway.</p>
-        <ul>{kept.map(s => (
-          <li key={s.id}>
-            <div><b>{s.name}</b><span className="reg">{s.reg}</span></div>
-            <span>Placed at {placed[s.id].company} on {longDate(placed[s.id].date)}</span>
-          </li>
-        ))}</ul>
-      </section>}
+      </section>
     </Pop>
   );
 }
@@ -352,6 +378,7 @@ const ICONS = {
   undo: 'M9 14 4 9l5-5M4 9h10.5a5.5 5.5 0 0 1 0 11H11',
   check: 'M20 6 9 17l-5-5',
   x: 'M18 6 6 18M6 6l12 12',
+  minus: 'M5 12h14',
   plus: 'M5 12h14M12 5v14',
   right: 'M5 12h14M12 5l7 7-7 7',
   left: 'M19 12H5M12 19l-7-7 7-7',
@@ -381,6 +408,9 @@ const ICONS = {
   roll: 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM16 11l2 2 4-4',
   info: 'M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM12 16v-4M12 8h.01',
   refresh: 'M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8M21 3v5h-5',
+  present: 'M2 3h20M21 3v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V3M7 21l5-5 5 5',
+  monitor: 'M4 3h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM8 21h8M12 17v4',
+  users: 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75',
 };
 export const Icon = ({ n, s = 16 }: { n: keyof typeof ICONS; s?: number }) => (
   <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d={ICONS[n]} /></svg>
@@ -399,10 +429,15 @@ export const Logo = ({ s = 28 }: { s?: number }) => (
 );
 
 // The bar at the top of every desk page: the app (a link home), where you are, then the page's own buttons.
-export const TopBar = ({ title, badge, children }: { title?: string; badge?: React.ReactNode; children?: React.ReactNode }) => (
+// title: the drive's name, which leads back to its dashboard (`to`: a page, or a way back within this one); sub: where in it
+export const TopBar = ({ title, sub, to, badge, children }: { title?: string; sub?: string; to?: string | (() => void); badge?: React.ReactNode; children?: React.ReactNode }) => (
   <header className="top">
     <Link href="/" className="brand" title="All drives"><Logo /><Wordmark /></Link>
-    {title && <><span className="slash" aria-hidden>/</span><b className="crumb" title={title}>{title}</b></>}
+    {title && <><span className="slash" aria-hidden>/</span>{
+      typeof to === 'string' ? <Link className="crumb go" href={to} title={`${title}: drive dashboard`}>{title}</Link>
+      : to ? <button className="crumb go" onClick={to} title={`${title}: drive dashboard`}>{title}</button>
+      : <b className="crumb" title={title}>{title}</b>}</>}
+    {sub && <><span className="slash" aria-hidden>/</span><b className="crumb">{sub}</b></>}
     {badge}
     <div className="sp" />
     <SyncStatus />

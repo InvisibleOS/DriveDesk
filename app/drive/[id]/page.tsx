@@ -1,23 +1,27 @@
 'use client';
-import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
-import { useEffect, useRef, useState } from 'react';
-import { LABEL, forecast, localDate, type Drive, type Status } from '@/lib/drive';
+import { useEffect, useState } from 'react';
+import { LABEL, ORDER, PHASES, SHORT, called, eligible, missed, endOf, forecast, phasesOf, startOf, type Drive, type Phase, type PhaseKey, type Pupil, type Status } from '@/lib/drive';
 import { Board, Camp, span } from '../../board';
-import { Activity, LocationPick, Setup, Students, Summary, exportCSV, exportSelected } from '../../panels';
-import { AlsoIn, DeskMenu, Field, Warnings, Icon, TopBar, ask, letGo, longDate, post, tm, useDrive, useNow, type Live, type Seen, type Send } from '../../ui';
+import { Activity, Setup, Students, Summary } from '../../panels';
+import { DriveDash } from '../../phases';
+import { AlsoIn, DeskMenu, Field, Warnings, Icon, PageHead, Sheet, Stat, TopBar, ask, longDate, post, tm, useDrive, useNow, useSheet, type Seen, type Send } from '../../ui';
 
 type Tab = 'board' | 'setup' | 'log'; // 'board' is the summary once a drive has ended
 const STATS = [['present', 'Present', ''], ['in', 'In cabins', 'in'], ['pending', 'Awaiting', 'pend'], ['selected', 'Selected', 'ok'], ['rejected', 'Rejected', 'no'], ['absent', 'Absent', 'abs']] as const;
 
-// while a drive runs: when its last interview likely ends, from the pace so far
-const Finish = ({ d }: { d: Drive }) => { const f = forecast(d, useNow()); return f && f.done > Date.now() ? <> · likely done by {tm(f.done)}</> : null };
+// while a drive runs: how long students wait for each call (from attendance, then from leaving the cabin before), and when the last interview likely ends
+const Finish = ({ d }: { d: Drive }) => {
+  const f = forecast(d, useNow()), start = Math.min(d.attendance ?? d.startedAt, d.startedAt);
+  const w = d.students.flatMap(s => s.hist.map((h, i) => h.call - (i ? s.hist[i - 1].out ?? h.call : start))).filter(x => x > 0);
+  return <>{w.length > 0 && <> · avg wait {span(w.reduce((a, b) => a + b) / w.length)}</>}{f && f.done > Date.now() && <> · likely done by {tm(f.done)}</>}</>;
+};
 // the drive's date, place and hours, under the top bar
 const Meta = ({ d }: { d: Drive }) => (
   <div className="pmeta">
     <span><Icon n="calendar" s={14} />{longDate(d.date)}</span>
     {d.location && <span><Icon n="pin" s={14} />{d.location}</span>}
-    {d.startedAt > 0 && <span><Icon n="clock" s={14} />{d.endedAt ? `${tm(d.startedAt)} – ${tm(d.endedAt)} · ${span(d.endedAt - d.startedAt)}` : <>Started {tm(d.startedAt)}{d.status === 'live' && <Finish d={d} />}</>}</span>}
+    {(called(d) || !!d.endedAt) && <span><Icon n="clock" s={14} />{d.endedAt ? `${tm(d.startedAt)} – ${tm(d.endedAt)} · ${span(d.endedAt - d.startedAt)}` : <>Started {tm(d.startedAt)}{d.status === 'live' && <Finish d={d} />}</>}</span>}
   </div>
 );
 
@@ -26,9 +30,11 @@ export default function Desk() {
   const router = useRouter();
   const { x, live, send, gate } = useDrive(id);
   const [tab, setTab] = useState<Tab>('board');
+  const [inside, setInside] = useState(false); // the interview dashboard, opened from the drive's interviews column
+  const [att, setAtt] = useState<PhaseKey | null>(null); // a talk's or test's attendance, opened from the drive dashboard
   const [view, setView] = useState<Status | 'present' | null>(null); // header number clicked → read-only list of those students
-  const sheet = useRef<HTMLDialogElement>(null);
-  useEffect(() => { if (view) { letGo(); sheet.current?.showModal() } }, [view]);
+  const [sheet, showSheet] = useSheet();
+  useEffect(() => { if (view) showSheet() }, [view]); // eslint-disable-line react-hooks/exhaustive-deps
   const company = x?.drive.company;
   useEffect(() => { if (company) document.title = `${company} · DriveDesk` }, [company]); // tells tabs apart when several drives are open
   useEffect(() => {
@@ -40,49 +46,52 @@ export default function Desk() {
   }, [send]);
   if (gate || !x) return gate;
 
-  const d = x.drive, done = d.status === 'done', n = (st: string) => d.students.filter(s => st === 'present' ? s.status !== 'absent' : s.status === st).length;
+  const d = x.drive, done = d.status === 'done', n = (st: string) => d.students.filter(s => st === 'present' ? s.status !== 'absent' : s.status === st).length + (st === 'absent' ? missed(d).length : 0); // absent counts those who missed a PPT or OA too
   const title = (k: Status | 'present') => k === 'present' ? 'Present' : LABEL[k];
   const cur: Tab = done && tab === 'setup' ? 'board' : tab; // an ended drive has its summary and logs, no settings
-  const end = async () => { if (await ask(`End the ${d.company} drive?`, 'It moves to the calendar as completed. You can reopen it later if needed.', 'End drive')) send({ type: 'finish' }) };
   const del = async () => {
     if (!await ask(`Delete the ${d.company} drive?`, `${longDate(d.date)}. It disappears from the dashboard and calendar. The file is kept in data/trash.`, 'Delete drive', true)) return;
     try { await post(`/api/drives/${id}`, undefined, 'DELETE'); router.push('/') } catch { /* already shown */ }
   };
-  if (d.status === 'planned') return <Planned d={d} send={send} onDelete={del} />;
-  if (d.status === 'live' && !d.attendance) return <Attendance d={d} send={send} also={x.also} placed={x.placed} />;
+  // a drive opens on its phases; the interview dashboard is one of them, left through the drive's name in the top bar
+  const out = () => setInside(false);
+  if (d.status === 'planned' || !inside) {
+    const ap = phasesOf(d).find(p => p.k === att);
+    if (ap && Date.now() < endOf(ap)) return <PhaseRoll d={d} p={ap} send={send} back={() => setAtt(null)} />;
+    const attend = (p: Phase) => { if (!p.roll) send({ type: 'phaseRoll', k: p.k }); setAtt(p.k) };
+    return <DriveDash d={d} send={send} onDelete={del} open={() => setInside(true)} attend={attend} />;
+  }
+  if (d.status === 'live' && !d.attendance) return <Attendance d={d} send={send} also={x.also} out={out} />;
 
   return (
     <div className="app">
-      <TopBar title={d.company} badge={done ? <span className="pill hide-sm">Completed</span>
+      <TopBar title={d.company} sub="Interviews" to={out} badge={done ? <span className="pill hide-sm">Completed</span>
         : x.held ? <span className="pill warn" title="Another laptop changed this drive in the last 10 minutes. You can watch it here; take over to run it from this laptop">Running on {x.held}</span>
         : <span className={`pill ${live ? 'ok live' : 'warn'}`} title={live ? 'Connected. Changes save instantly' : 'Lost connection to the server, retrying'}>{live ? 'Live' : 'Reconnecting…'}</span>}>
-        {!done && <Warnings d={d} also={x.also} placed={x.placed} />}
+        {!done && <Warnings d={d} also={x.also} />}
         {x.held ? <>
           <button className="primary" onClick={async () => { if (await ask('Run this drive from this laptop?', `${x.held} stops being able to change it until it takes over again. Do this when that laptop is closed or has moved on.`, 'Take over')) send({ type: 'takeOver' }) }}>Take over</button>
           <DeskMenu items={[[<><Icon n="logs" />Logs</>, () => setTab('log')]]} />
         </> : done ? <>
-          <button onClick={() => exportCSV(d)} title="Download the results sheet (Excel)" aria-label="Results"><Icon n="download" /><span className="hide-sm">Results</span></button>
           <button onClick={() => send({ type: 'reopen' })} title="Reopen this drive" aria-label="Reopen drive"><Icon n="reopen" /><span className="hide-sm">Reopen drive</span></button>
           <button className="icon ghost" onClick={del} title="Delete this drive" aria-label="Delete this drive"><Icon n="trash" /></button>
-          <DeskMenu items={[[<><Icon n="download" />Selected students (CSV)</>, () => exportSelected(d)], [<><Icon n="logs" />Logs</>, () => setTab('log')]]} />
+          <DeskMenu items={[[<><Icon n="logs" />Logs</>, () => setTab('log')]]} />
         </> : <>
           <button className="icon ghost" disabled={!x.undo} onClick={() => send({ type: 'undo' })} title={x.undo ? `Undo: ${x.undo} (Ctrl/⌘+Z)` : 'Nothing to undo'} aria-label="Undo"><Icon n="undo" /></button>
-          <button className="danger" onClick={end} title="Finish this drive and move it to the calendar history"><Icon n="flag" /><span className="hide-sm">End drive</span></button>
-          <DeskMenu items={[[<><Icon n="settings" />Settings</>, () => setTab('setup')], [<><Icon n="download" />Selected students (CSV)</>, () => exportSelected(d)], [<><Icon n="logs" />Logs</>, () => setTab('log')]]} />
+          <DeskMenu items={[[<><Icon n="settings" />Settings</>, () => setTab('setup')], [<><Icon n="logs" />Logs</>, () => setTab('log')]]} />
         </>}
       </TopBar>
       <main>
         {cur === 'board' ? <>
-          <div className="phead">
-            <div><h1>{d.company}</h1><Meta d={d} /></div>
+          <PageHead title={d.company} meta={<Meta d={d} />}>
             <div className="stats">
               {/* an ended drive has nobody in a cabin; Awaiting stays only while some results were never given */}
               {STATS.filter(([k]) => !done || (k !== 'in' && (k !== 'pending' || n(k) > 0))).map(([k, l, c]) => (
-                <button key={k} className={`stat ${c}`} onClick={() => setView(k)} title={`Show ${title(k).toLowerCase()}`}><span>{l}</span><b>{n(k)}</b></button>
+                <Stat key={k} label={l} value={n(k)} tone={c} onClick={() => setView(k)} title={`Show ${title(k).toLowerCase()}`} />
               ))}
             </div>
-          </div>
-          {done ? <Summary d={d} /> : d.students.length ? <Board d={d} send={send} also={x.also} /> : (
+          </PageHead>
+          {done ? <Summary d={d} /> : d.students.length ? <Board d={d} send={send} also={x.also} setup={() => setTab('setup')} /> : (
             <div className="emptyst">
               <h2>No students yet</h2>
               <p className="meta">No students were added when this drive was set up.</p>
@@ -95,59 +104,48 @@ export default function Desk() {
           </div>
         )}
       </main>
-      <dialog ref={sheet} className="sheet" onClose={() => setView(null)} onClick={e => e.target === e.currentTarget && sheet.current?.close()}>
-        {view && <>
-          <div className="sheet-h"><h2>{title(view)}</h2><span className="cnt">{n(view)}</span><div className="sp" />
-            <button className="icon ghost" onClick={() => sheet.current?.close()} aria-label="Close"><Icon n="x" /></button></div>
-          <Students key={view} d={d} status={view} send={send} also={x.also} />
-        </>}
-      </dialog>
-    </div>
-  );
-}
-
-// A drive created for a later day: only its details until drive day, then the rest of the setup.
-function Planned({ d, send, onDelete }: { d: Drive; send: Send; onDelete: () => void }) {
-  const due = d.date <= localDate(Date.now());
-  return (
-    <div className="app">
-      <TopBar title={d.company} badge={<span className={`pill ${due ? 'warn' : ''}`}>{due ? 'Not set up' : 'Scheduled'}</span>}><DeskMenu /></TopBar>
-      <main>
-        <div className="emptyst planned">
-          <span className="okmark"><Icon n="check" s={20} /></span>
-          <div>
-            <h2>Drive created</h2>
-            <p className="meta">{due
-              ? 'It is drive day. Set up rounds, cabins and students to open the board.'
-              : `Scheduled for ${longDate(d.date)}. You can set up rounds, cabins and students on the day.`}</p>
-          </div>
-          <label className="field">Company<Field value={d.company} onSave={name => send({ type: 'company', name })} /></label>
-          <label className="field">Date<input type="date" value={d.date} onChange={e => e.target.value && send({ type: 'date', date: e.target.value })} /></label>
-          <div className="field">Location<LocationPick value={d.location} onPick={location => send({ type: 'location', location })} /></div>
-          <div className="row foot">
-            <button className="icon ghost" onClick={onDelete} title="Delete this drive" aria-label="Delete this drive"><Icon n="trash" /></button>
-            <div className="sp" />
-            <Link className="btn" href="/">All drives</Link>
-            {due && <Link className="btn primary" href={`/new?id=${d.id}`}>Continue setting up<Icon n="right" /></Link>}
-          </div>
-        </div>
-      </main>
+      <Sheet sheet={sheet} title={view && title(view)} count={view ? n(view) : undefined} onClose={() => setView(null)}>
+        {view && <Students key={view} d={d} status={view} send={send} also={x.also} />}
+      </Sheet>
     </div>
   );
 }
 
 // Before any interview: everyone starts ticked present; untick whoever is missing (the reason is optional).
-// The list is saved on the drive as it is taken (d.roll), so a refresh or a volunteer's phone carries on from the same place.
+const Attendance = ({ d, send, also, out }: { d: Drive; send: Send; also: Seen; out: () => void }) => (
+  <RollCall d={d} home={out} people={d.students} roll={d.roll} also={also} meta={<Meta d={d} />} earlier={missed(d)} send={send}
+    mark={(id, absent, reason) => send({ type: 'roll', id, absent, reason })} start={() => send({ type: 'roll' })}
+    top={<Warnings d={d} also={also} />}
+    intro={`${d.students.length} student${d.students.length === 1 ? '' : 's'} on the list. Saved as it is taken; confirming it makes it final.`}
+    bar={<><button onClick={out}><Icon n="left" />Back to drive</button><button className="primary" onClick={() => send({ type: 'attendance' }).then(out)}><Icon n="check" />Confirm attendance</button></>} />
+);
+
+// A talk's or test's attendance, of the students eligible for it. Saved as it is taken; final once the phase ends,
+// which is done from its column on the drive's page.
+const PhaseRoll = ({ d, p, send, back }: { d: Drive; p: Phase; send: Send; back: () => void }) => (
+  <RollCall d={d} home={back} people={eligible(d, p.k)} roll={p.roll} badge={`${SHORT[p.k]} attendance`} send={send}
+    earlier={missed(d).filter(m => ORDER.indexOf(m.k) < ORDER.indexOf(p.k))}
+    meta={<div className="pmeta"><span><Icon n="roll" s={14} />{PHASES[p.k]}</span><span><Icon n="clock" s={14} />{p.k === 'ppt' ? `Started ${tm(startOf(p))} · ends by ${tm(endOf(p))}` : `Set for ${tm(startOf(p))} · runs until you end it`}</span>{p.venue && <span><Icon n="pin" s={14} />{p.venue}</span>}</div>}
+    mark={(id, absent, reason) => send({ type: 'phaseRoll', k: p.k, id, absent, reason })} start={() => send({ type: 'phaseRoll', k: p.k })}
+    intro={`${eligible(d, p.k).length} eligible students.`}
+    bar={<button onClick={back}><Icon n="left" />Back to drive</button>} />
+);
+
+// The list is saved as it is taken, so a refresh or a volunteer's phone carries on from the same place.
 // Unticked students move to a section at the bottom: reading the list top to bottom, nothing above you ever shifts.
 // Roll call by keyboard: a highlighted row follows the names as they are read out; Enter = present, A = absent, both move on.
-function Attendance({ d, send, also, placed }: { d: Drive; send: Send; also: Seen; placed: Live['placed'] }) {
+function RollCall({ d, home, people, roll, mark, start, intro, bar, meta, top, also = {}, badge = 'Attendance', earlier, send }: {
+  d: Drive; home: () => void; people: Pupil[]; roll?: Record<string, string>; mark: (id: string, absent: boolean, reason?: string) => void; start: () => void;
+  intro: string; bar: React.ReactNode; meta: React.ReactNode; top?: React.ReactNode; also?: Seen; badge?: string;
+  earlier: ReturnType<typeof missed>; send: Send; // absent at a phase before this one, so not on this list unless made eligible
+}) {
   const [q, setQ] = useState('');
   const [cur, setCur] = useState<string | null>(null); // highlighted student
-  const roll = d.roll; // undefined until Take attendance is pressed
-  const off = roll ? Object.keys(roll).length : 0;
-  const shown = d.students.map((s, i) => ({ s, i })).filter(({ s }) => `${s.reg} ${s.name}`.toLowerCase().includes(q.toLowerCase()));
+  const off = roll ? Object.keys(roll).length : 0; // roll: undefined until Take attendance is pressed
+  const shown = people.map((s, i) => ({ s, i })).filter(({ s }) => `${s.reg} ${s.name}`.toLowerCase().includes(q.toLowerCase()));
   const here = shown.filter(({ s }) => !roll || !(s.id in roll)), gone = shown.filter(({ s }) => roll && s.id in roll);
-  const ci = d.students.findIndex(s => s.id === cur), j = here.findIndex(({ i }) => i >= ci);
+  const before = earlier.filter(({ s }) => `${s.reg} ${s.name}`.toLowerCase().includes(q.toLowerCase()));
+  const ci = people.findIndex(s => s.id === cur), j = here.findIndex(({ i }) => i >= ci);
   const at = j < 0 ? here.length - 1 : j, hi = here[at]?.s.id; // the highlighted name (the first by default); once it's marked absent, the next one
   useEffect(() => {
     if (!roll) return;
@@ -156,17 +154,17 @@ function Attendance({ d, send, also, placed }: { d: Drive; send: Send; also: See
       const go = (i: number) => { e.preventDefault(); setCur(here[Math.min(Math.max(i, 0), here.length - 1)]?.s.id ?? null) };
       if (e.key === 'Enter' || e.key === 'ArrowDown') go(at + 1);
       else if (e.key === 'ArrowUp') go(at - 1);
-      else if (e.key === 'a' || e.key === 'A') { send({ type: 'roll', id: hi, absent: true }); go(at + 1) } // marked absent, it moves to the bottom
+      else if (e.key === 'a' || e.key === 'A') { mark(hi, true); go(at + 1) } // marked absent, it moves to the bottom
     };
     addEventListener('keydown', k);
     return () => removeEventListener('keydown', k);
-  }, [roll, here, at, hi, send]);
+  }, [roll, here, at, hi, mark]);
   useEffect(() => { document.querySelector('.att tr.cur')?.scrollIntoView({ block: 'nearest' }) }, [hi]);
-  const row = ({ s, i }: { s: Drive['students'][number]; i: number }) => {
+  const row = ({ s, i }: { s: Pupil; i: number }) => {
     // only the checkbox marks someone absent or present; a click elsewhere on the row just moves the highlight
-    const out = !!roll && s.id in roll, flip = () => send({ type: 'roll', id: s.id, absent: !out });
+    const out = !!roll && s.id in roll, flip = () => mark(s.id, !out);
     const reason = out && <Field value={roll![s.id]} placeholder="Reason (optional)" maxLength={200} aria-label={`Why ${s.name} is absent`}
-      onSave={reason => send({ type: 'roll', id: s.id, absent: true, reason })} />; // beside the name on a laptop, under it on a phone
+      onSave={reason => mark(s.id, true, reason)} />; // beside the name on a laptop, under it on a phone
     return (
       <tr key={s.id} className={out ? 'abs' : s.id === hi ? 'cur' : ''} onClick={() => { if (!out) setCur(s.id) }}>
         <td className="cb"><input type="checkbox" checked={!out} onChange={flip} aria-label={`${s.name} is present`} /></td>
@@ -180,34 +178,30 @@ function Attendance({ d, send, also, placed }: { d: Drive; send: Send; also: See
   };
   return (
     <div className="app">
-      <TopBar title={d.company} badge={<span className="pill warn hide-sm">Attendance</span>}><Warnings d={d} also={also} placed={placed} /><DeskMenu /></TopBar>
+      <TopBar title={d.company} to={home} badge={<span className="pill warn hide-sm">{badge}</span>}>{top}<DeskMenu /></TopBar>
       <main>
         {!roll ? (
           <div className="emptyst planned centered">
             <span className="okmark accent"><Icon n="roll" s={20} /></span>
             <div>
               <h2>Take attendance</h2>
-              <p className="meta">{d.students.length} student{d.students.length === 1 ? '' : 's'} on the list. Interviews start once attendance has been taken.</p>
+              <p className="meta">{intro}</p>
             </div>
             <div className="row foot">
-              <Link className="btn" href="/"><Icon n="left" />Back</Link>
-              <button className="primary" onClick={() => send({ type: 'roll' })}>Take attendance<Icon n="right" /></button>
+              <button onClick={home}><Icon n="left" />Back to drive</button>
+              <button className="primary" onClick={start}>Take attendance<Icon n="right" /></button>
             </div>
           </div>
         ) : (<>
-          <div className="phead">
-            <div><h1>{d.company}</h1><Meta d={d} /></div>
-            <div className="stats">
-              <div className="stat"><span>Present</span><b>{d.students.length - off}</b></div>
-              <div className="stat abs"><span>Absent</span><b>{off}</b></div>
-            </div>
-          </div>
+          <PageHead title={d.company} meta={meta}>
+            <div className="stats"><Stat label="Present" value={people.length - off} /><Stat label="Absent" value={off} tone="abs" /></div>
+          </PageHead>
           <div className="panel att">
             <div className="panel-bar">
               <label className="search w240"><Icon n="search" s={14} /><input type="search" placeholder="Search by name or reg. no." value={q} onChange={e => setQ(e.target.value)} aria-label="Search students" /></label>
               <span className="keys hide-sm"><kbd>Enter</kbd> present <kbd>A</kbd> absent <kbd>↑</kbd><kbd>↓</kbd> move</span>
               <div className="sp" />
-              <button className="primary" onClick={() => send({ type: 'attendance' })}><Icon n="check" />Confirm attendance</button>
+              {bar}
             </div>
             <div className="scroll">
               <table>
@@ -216,7 +210,20 @@ function Attendance({ d, send, also, placed }: { d: Drive; send: Send; also: See
                   {here.map(row)}
                   {gone.length > 0 && <tr className="sect"><td colSpan={6}>Marked absent · {gone.length}</td></tr>}
                   {gone.map(row)}
-                  {!shown.length && <tr><td colSpan={6} className="empty">No students</td></tr>}
+                  {before.length > 0 && <tr className="sect"><td colSpan={6}>Absent at an earlier phase · {before.length}<span> · make them eligible to add them here</span></td></tr>}
+                  {before.map(({ s, k, reason }) => (
+                    <tr key={s.id} className="abs">
+                      <td className="cb" />
+                      <td className="num hide-sm" />
+                      <td className="reg hide-sm">{s.reg}</td>
+                      <td><b>{s.name}</b><small className="reg sm-only">{s.reg}</small></td>
+                      <td className="hide-sm"><Camp c={s.campus} /></td>
+                      <td><div className="why"><span className="meta nowrap">Missed the {SHORT[k]}</span>
+                        <Field value={reason} placeholder="Reason (optional)" maxLength={200} aria-label={`Why ${s.name} missed the ${SHORT[k]}`} onSave={reason => send({ type: 'reason', k, id: s.id, reason })} />
+                        <button className="sm" onClick={() => send({ type: 'excuse', k, id: s.id })}><Icon n="check" s={13} />Make eligible</button></div></td>
+                    </tr>
+                  ))}
+                  {!shown.length && !before.length && <tr><td colSpan={6} className="empty">No students</td></tr>}
                 </tbody>
               </table>
             </div>

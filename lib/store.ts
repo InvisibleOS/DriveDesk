@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import * as cloud from './cloud';
-import { alsoIn, apply, migrate, placedIn, newDrive, planDrive, QUIET, summary, type Action, type Drive, type DriveConfig } from './drive';
+import { alsoIn, apply, migrate, newDrive, planDrive, QUIET, summary, type Action, type Drive, type DriveConfig, type Plan } from './drive';
 
 const DATA = process.env.DATA_DIR || path.join(process.cwd(), 'data');
 const DIR = path.join(DATA, 'drives'), TRASH = path.join(DATA, 'trash'), STATE = path.join(DATA, 'sync.json');
@@ -80,8 +80,6 @@ export function guard(req: Request) {
   return no && Response.json({ error: no === 'pin' ? 'PIN required' : 'Sign in to the committee account first', gate: no }, { status: 401 });
 }
 
-// everyone already selected in some drive (any laptop's, once synced): a new drive's student list leaves them out
-export const placed = () => placedIn([...drives().values()].map(l => l.d));
 export const list = () => [...drives().values()].map(l => summary(l.d)).sort((a, b) => b.startedAt - a.startedAt);
 export const get = (id: string) => drives().get(id);
 
@@ -89,17 +87,12 @@ export const get = (id: string) => drives().get(id);
 const heldBy = (d: Drive) => d.status === 'live' && d.host && d.host.device !== st().device && Date.now() - d.host.at < HOLD ? d.host.name : null;
 // also: this drive's present students who are present in another live drive too, and what they are doing there
 const liveDrives = () => [...drives().values()].filter(o => o.d.status === 'live').map(o => o.d);
-// placed: this drive's students already selected in another drive (the desk kept them anyway)
-const keptPlaced = (d: Drive) => {
-  const p = placedIn([...drives().values()].map(o => o.d).filter(o => o.id !== d.id));
-  return Object.fromEntries(d.students.filter(s => s.reg && p[s.reg]).map(s => [s.id, p[s.reg]]));
-};
-export const payload = (l: Live) => JSON.stringify({ drive: l.d, undo: l.undo.at(-1)?.label ?? null, held: heldBy(l.d), also: alsoIn(l.d, liveDrives()), placed: keptPlaced(l.d), now: Date.now() });
+export const payload = (l: Live) => JSON.stringify({ drive: l.d, undo: l.undo.at(-1)?.label ?? null, held: heldBy(l.d), also: alsoIn(l.d, liveDrives()), now: Date.now() });
 // a change to one drive can change what the other open drives show about shared students
 const tell = (l: Live) => { const p = payload(l); l.subs.forEach(send => send(p)) };
 const tellAll = () => { for (const l of drives().values()) if (l.subs.size) tell(l) };
 
-export function create(c: DriveConfig) {
+export function create(c: DriveConfig & { plan?: Plan }) {
   const m = drives(), d = c.rooms ? newDrive(c, '') : planDrive(c, ''); // no cabins yet = booked for a later day
   d.id = uniqueId(m, d);
   m.set(d.id, { d, undo: [], subs: new Set(), rev: 1, pushed: 0 });
