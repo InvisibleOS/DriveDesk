@@ -98,7 +98,32 @@ export const missed = (d: Drive) => (d.pool ?? []).flatMap(s => {
 // where an interview student was marked absent: at the interviews' attendance, or later, when due for a round
 export const absentAt = (d: Drive, s: Student) => !d.attendance || s.t <= d.attendance ? 'Interview attendance' : rname(d, s.done);
 // ponytail: fixed list for now; make it editable when the committee changes
-export const VOLUNTEERS = ['Aditi Rao', 'Karthik Menon', 'Nandini Shetty', 'Rahul Iyer', 'Sneha Pai'];
+export const VOLUNTEERS = [
+  'Vansh Mehta',
+  'Srikara Sasank',
+  'Aashvi Agrawal',
+  'Anusha',
+  'Arjun Wad',
+  'Dev Kewlani',
+  'Gayatrie',
+  'Pratham Gandhi',
+  'Nithyanta Srinivas',
+  'Shivansh Srivastava',
+  'Riya Dixit',
+  'Riddhi Jain',
+  'Tushar Maiyya',
+  'Dhruvi Dave',
+  'Eshani',
+  'Rucha',
+  'Rudraksha',
+  'Swasti Gupta',
+  'Tanvi Ghule',
+  'Satvik',
+  'Yuvika Das',
+  'Shriya Singh',
+  'Rishit Agrawal',
+  'Rosanne',
+];
 // drives from before phases are just their interviews
 export const phasesOf = (d: Drive): Phase[] => d.phases?.map(p => ({ ...p, crew: p.crew ?? [] })) ?? [{ k: 'int', venue: d.location, at: d.date, crew: [] }];
 
