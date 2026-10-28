@@ -1,12 +1,22 @@
 'use client';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { statusLabel, type Action, type Also, type Drive, type Summary } from '@/lib/drive';
+import { lead, PHASES, statusLabel, type Action, type Also, type Ask, type Drive, type Member, type PhaseKey, type Summary } from '@/lib/drive';
 
 let skew = 0; // server clock − this device's clock, so the display clock matches the desk
 export const now = () => Date.now() + skew;
 export const tm = (t?: number) => t ? new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
 export const longDate = (ds: string) => ds ? new Date(`${ds}T00:00`).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }) : '';
+// '2026-10-26T10:00' → 'Mon, 26 Oct · 10:00'
+export const when = (at: string) => {
+  if (!at) return 'No date yet';
+  const z = new Date(at.length > 10 ? at : `${at}T00:00`), day = z.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' });
+  return at.length > 10 ? `${day} · ${tm(z.getTime())}` : day;
+};
+// a person's initials in a small round badge
+const initials = (n: string) => n.split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase();
+export const Av = ({ n }: { n: string }) => <i className="av" aria-hidden>{initials(n)}</i>;
 
 export function toast(m: string, bad = false) {
   const t = document.createElement('div');
@@ -58,8 +68,9 @@ export async function post<T = { msg?: string }>(path: string, body?: unknown, m
 }
 
 // held: the other laptop running this drive; also: student id → where else they are present right now;
+// me: who is signed in; can: the phases they run (a junior, those they volunteer at); asks: its volunteer requests
 export type Seen = Record<string, Also[]>;
-export type Live = { drive: Drive; undo: string | null; held: string | null; also: Seen };
+export type Live = { drive: Drive; undo: string | null; held: string | null; also: Seen; me: Member | null; can: Partial<Record<PhaseKey, boolean>>; asks: Ask[] };
 export type Send = (a: Action | { type: 'undo' } | { type: 'takeOver' }) => Promise<void>;
 type Gate = 'pin' | 'signin';
 const gateOf = (r: Response) => r.json().then(j => (j.gate === 'signin' ? 'signin' : 'pin') as Gate, () => 'pin' as Gate);
@@ -95,25 +106,45 @@ export function useDrive(id: string) {
   return { x, live, send, gate };
 }
 
-// Every drive's summary, for the dashboard.
+// Every drive's summary for the dashboard, with who is signed in and their volunteer requests.
 export function useDrives() {
   const [list, setList] = useState<Summary[] | null>(null);
+  const [mine, setMine] = useState<{ me: Member | null; asks: Ask[] }>({ me: null, asks: [] });
   const [gate, setGate] = useState<Gate | null>(null);
   useEffect(() => {
     const load = () => fetch(withPin('/api/drives'))
       .then(async r => r.status === 401 ? setGate(await gateOf(r))
-        : r.ok ? r.json().then(j => setList(j.drives))
+        : r.ok ? r.json().then(j => { setList(j.drives); setMine({ me: j.me, asks: j.asks }) })
         : toast(`The desk hit a problem (error ${r.status}). Restart the app; if it keeps happening, send server.log from the app's data folder`, true))
       .catch(() => toast('Server not reachable', true));
     load();
     const i = setInterval(load, 15000); // drives made or changed on other laptops show up without a reload
     return () => clearInterval(i);
   }, []);
-  return { list, gate: gateFor(gate) ?? (!list ? <div className="loading">Loading…</div> : null) };
+  return { list, ...mine, gate: gateFor(gate) ?? (!list ? <div className="loading">Loading…</div> : null) };
 }
 
-// First screen on a laptop that hasn't signed in: the desk's name and tagline beside the sign-in for the committee's one
-// shared account (it stays signed in after that).
+// Everyone with an account (volunteers' names, the Accounts page) and who is signed in here: one copy for the whole
+// page, refreshed every minute; loadPeople(true) asks the shared copy straight away.
+type People = { me: Member | null; members: Member[] };
+let people: People | null = null, every: ReturnType<typeof setInterval> | undefined;
+const heard = new Set<(p: People) => void>();
+export const loadPeople = (fresh = false) => fetch(withPin(`/api/members${fresh ? '?fresh=1' : ''}`)).then(r => r.ok ? r.json() : null)
+  .then((p: People | null) => { if (p?.members) { people = p; heard.forEach(f => f(p)) } }, () => {});
+export function usePeople() {
+  const [p, setP] = useState(people);
+  useEffect(() => {
+    heard.add(setP);
+    if (!people) loadPeople();
+    every ??= setInterval(loadPeople, 60e3);
+    return () => { heard.delete(setP) };
+  }, []);
+  return p;
+}
+export const nameOf = (p: People | null, user: string) => p?.members.find(m => m.user === user)?.name ?? user;
+
+// First screen on a laptop that hasn't signed in: the desk's name and tagline beside the sign-in with a member's own
+// account, made by the admin on the Accounts page (it stays signed in after that).
 function SignIn() {
   const [busy, setBusy] = useState(false);
   const [show, setShow] = useState(false);
@@ -144,10 +175,10 @@ function SignIn() {
         <form className="land-card" onSubmit={submit}>
           <div>
             <h2>Welcome back</h2>
-            <p className="meta">Sign in with the placement committee&rsquo;s account. This laptop stays signed in.</p>
+            <p className="meta">Sign in with your DriveDesk account. This laptop stays signed in.</p>
           </div>
           <label className="lf"><span>Username</span>
-            <input name="username" type="text" autoComplete="username" autoCapitalize="none" spellCheck={false} placeholder="pcom" required autoFocus />
+            <input name="username" type="text" autoComplete="username" autoCapitalize="none" spellCheck={false} placeholder="e.g. riddhi" required autoFocus />
           </label>
           <label className="lf"><span>Password</span>
             <span className="pw">
@@ -157,7 +188,7 @@ function SignIn() {
           </label>
           {err && <p className="land-err" role="alert">{err}</p>}
           <button className="primary" disabled={busy}>{busy ? 'Signing in…' : <>Sign in<Icon n="right" s={15} /></>}</button>
-          <p className="land-help">Don&rsquo;t have the login? Ask your placement coordinator.</p>
+          <p className="land-help">No account yet? Ask your placement coordinator to add you.</p>
         </form>
       </section>
     </div>
@@ -225,7 +256,7 @@ function useOutside(open: boolean, setOpen: (o: boolean) => void, ref: React.Ref
   }, [open, setOpen, ref]);
 }
 
-export function More({ label, items, className = 'icon ghost', down, dot, children }: { label: string; items: [React.ReactNode, () => void][]; className?: string; down?: boolean; dot?: boolean; children?: React.ReactNode }) {
+export function More({ label, items, className = 'icon ghost', down, dot, head, children }: { label: string; items: [React.ReactNode, () => void][]; className?: string; down?: boolean; dot?: boolean; head?: React.ReactNode; children?: React.ReactNode }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLSpanElement>(null);
   useOutside(open, setOpen, ref);
@@ -233,6 +264,7 @@ export function More({ label, items, className = 'icon ghost', down, dot, childr
     <span ref={ref} className={`kebab${open ? ' open' : ''}`}>
       <button className={className} title={label} aria-label={label} aria-expanded={open} onClick={e => { e.stopPropagation(); setOpen(!open) }}>{children ?? <Icon n="more" />}{dot && <i className="dot" />}</button>
       {open && <div className={`menu${down ? ' down' : ''}`} role="menu">
+        {head}
         {items.map(([l, f], i) => <button key={i} role="menuitem" onClick={e => { e.stopPropagation(); setOpen(false); f() }}>{l}</button>)}
       </div>}
     </span>
@@ -336,7 +368,7 @@ export function AlsoIn({ a }: { a?: Also[] }) {
 
 // Top-bar warning on a drive whose present students are present in another live drive too: how many, and a list of
 // each one's status here and there, so the two desks can coordinate before calling them.
-// A top-bar icon that opens a small panel under it (sync status, warnings), in the ⋯ menu's style.
+// A top-bar icon that opens a small panel under it (sync status, warnings, volunteer requests), in the ⋯ menu's style.
 function Pop({ label, icon, tone = '', count, children }: { label: string; icon: keyof typeof ICONS; tone?: string; count?: number; children: React.ReactNode }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLSpanElement>(null);
@@ -348,6 +380,42 @@ function Pop({ label, icon, tone = '', count, children }: { label: string; icon:
       </button>
       {open && <div className="menu down pop" role="dialog" aria-label={label}>{children}</div>}
     </span>
+  );
+}
+
+// For seniors, in every top bar while anyone is waiting: members asking to volunteer, each with Decline and Approve.
+// Approving puts them on that phase's volunteers, which also lets them run the drive.
+type OpenAsk = Ask & { name: string; company: string; when: string };
+function Requests() {
+  const p = usePeople(), mine = lead(p?.me);
+  const [open, setOpen] = useState<OpenAsk[]>([]);
+  const load = useCallback(() => { fetch(withPin('/api/volunteers')).then(r => r.ok ? r.json() : null).then(j => j && setOpen(j.open), () => {}) }, []);
+  useEffect(() => {
+    if (!mine) return;
+    load();
+    const i = setInterval(load, 10000);
+    return () => clearInterval(i);
+  }, [mine, load]);
+  if (!mine || !open.length) return null;
+  const decide = async (a: OpenAsk, what: 'approve' | 'deny') => {
+    try { const j = await post('/api/volunteers', { drive: a.drive, k: a.k, user: a.user, what }); if (j.msg) toast(j.msg) } catch { /* already shown */ }
+    load();
+  };
+  const n = open.length;
+  return (
+    <Pop label={`${n} volunteer request${n > 1 ? 's' : ''}`} icon="hand" tone="req" count={n}>
+      <section className="pop-s">
+        <b>Volunteer requests · {n}</b>
+        <p>Approving adds them to the phase&rsquo;s volunteers, and lets them run the drive.</p>
+        <ul>{open.map(a => (
+          <li key={a.drive + a.k + a.user} className="vreq">
+            <div><Av n={a.name} /><b>{a.name}</b></div>
+            <span>{a.company} · {PHASES[a.k]} · {when(a.when)}</span>
+            <div className="row"><div className="sp" /><button className="sm" onClick={() => decide(a, 'deny')}>Decline</button><button className="sm primary" onClick={() => decide(a, 'approve')}><Icon n="check" s={13} />Approve</button></div>
+          </li>
+        ))}</ul>
+      </section>
+    </Pop>
   );
 }
 
@@ -411,6 +479,11 @@ const ICONS = {
   present: 'M2 3h20M21 3v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V3M7 21l5-5 5 5',
   monitor: 'M4 3h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM8 21h8M12 17v4',
   users: 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75',
+  hand: 'M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15',
+  userPlus: 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM19 8v6M22 11h-6',
+  key: 'M2.59 17.41A2 2 0 0 0 2 18.83V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.17a2 2 0 0 0 1.42-.59l.81-.81a6.5 6.5 0 1 0-4-4zM16.5 7.5h.01',
+  copy: 'M10 8h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H10a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2zM4 16a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2',
+  shield: 'M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z',
 };
 export const Icon = ({ n, s = 16 }: { n: keyof typeof ICONS; s?: number }) => (
   <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d={ICONS[n]} /></svg>
@@ -440,29 +513,34 @@ export const TopBar = ({ title, sub, to, badge, children }: { title?: string; su
     {sub && <><span className="slash" aria-hidden>/</span><b className="crumb">{sub}</b></>}
     {badge}
     <div className="sp" />
+    <Requests />
     <SyncStatus />
     {children && <div className="tools">{children}</div>}
   </header>
 );
 
-// ⋯ menu item: sign this laptop out of the committee account
+// ⋯ menu item: sign this laptop out
 const signOutItem: [React.ReactNode, () => void] = [<><Icon n="logout" />Sign out</>, async () => {
   if (!await ask('Sign out of this laptop?', 'The desk stays closed here until someone signs in again. Changes that haven’t uploaded yet wait on this laptop.', 'Sign out', true)) return;
   try { await post('/api/sync', undefined, 'DELETE'); location.reload() } catch { /* already shown */ }
 }];
 
-// The ⋯ at the right of the top bar: the page's own items, then the theme, About & updates and Sign out.
-// A red dot on it, and on About & updates, means a newer DriveDesk is out.
+// The account button at the right of the top bar: the signed-in member's initials (⋯ when nobody is), opening who they
+// are, the page's own items, Accounts for the admin, then the theme, About & updates and Sign out. A red dot on it, and on
+// About & updates, means a newer DriveDesk is out.
 export function DeskMenu({ items = [] }: { items?: [React.ReactNode, () => void][] }) {
   const [dark, flip] = useTheme();
-  const u = useUpdate();
+  const u = useUpdate(), p = usePeople(), router = useRouter();
   const [about, setAbout] = useState(false);
-  const fresh = !!u?.next;
+  const fresh = !!u?.next, me = p?.me;
   return <>
-    <More label={fresh ? 'More (update available)' : 'More'} down dot={fresh} items={[...items,
+    <More label={`${me ? me.name : 'More'}${fresh ? ' (update available)' : ''}`} className={me ? 'icon ghost tb me' : 'icon ghost'} down dot={fresh}
+      head={me && <div className="menu-me"><Av n={me.name} /><div><b>{me.name}</b><span>{me.user}</span></div><span className={`pill role-${me.role}`}>{me.role}</span></div>}
+      items={[...items,
+      ...p?.me?.role === 'admin' ? [[<><Icon n="shield" />Accounts</>, () => router.push('/accounts')] as [React.ReactNode, () => void]] : [],
       [<><Icon n={dark ? 'sun' : 'moon'} />{dark ? 'Light theme' : 'Dark theme'}</>, flip],
       [<><Icon n="info" />About &amp; updates{fresh && <i className="dot" title="Update available" />}</>, () => setAbout(true)],
-      signOutItem]} />
+      signOutItem]}>{me && <Av n={me.name} />}</More>
     {about && <About u={u} close={() => setAbout(false)} />}
   </>;
 }

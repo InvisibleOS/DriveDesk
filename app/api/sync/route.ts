@@ -1,11 +1,14 @@
-import { denied, signIn, signOut, syncStatus } from '@/lib/store';
+import { denied, ready, signIn, signOut, syncStatus } from '@/lib/store';
 
 // GET → is this laptop signed in, and how many changes wait to go up. POST { username, password } → sign in. DELETE → sign out.
 // Only the PIN guards these (phones on the Wi-Fi): signing in is how the sign-in gate is passed.
 const pinOnly = (req: Request) => denied(req) === 'pin' && Response.json({ error: 'PIN required', gate: 'pin' }, { status: 401 });
 
 export async function GET(req: Request) {
-  return pinOnly(req) || Response.json(syncStatus());
+  const no = pinOnly(req);
+  if (no) return no;
+  await ready();
+  return Response.json(syncStatus());
 }
 
 export async function POST(req: Request) {

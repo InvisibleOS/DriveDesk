@@ -23,7 +23,7 @@ export type Drive = {
 export type Kind = 'I' | 'P' | 'I+P'; // like the company, fixed once the drive is created
 export type PhaseKey = 'ppt' | 'oa' | 'int';
 export type Phase = {
-  k: PhaseKey; venue: string; at: string; crew: string[]; // at: local 'YYYY-MM-DDTHH:mm'; crew: its volunteers
+  k: PhaseKey; venue: string; at: string; crew: string[]; // at: local 'YYYY-MM-DDTHH:mm'; crew: its volunteers' usernames
   roll?: Record<string, string>; // a talk's or test's attendance once started: pool id → reason, for each student absent
   ended?: number; // ended from the desk; a PPT left running also ends by itself LENGTH after it starts
   excused?: string[]; // absent here, but made eligible for the phases after it
@@ -31,6 +31,33 @@ export type Phase = {
 export type Pupil = Row & { id: string };
 export type Plan = { kind: Kind; phases: Phase[]; students?: Row[] };
 export type Row = { reg: string; name: string; campus: Campus }; // reg: 9-digit registration number, the student's key ('' if unknown)
+// Who signs in (supabase/schema.sql): the admin manages accounts; seniors also create drives and approve volunteers;
+// juniors read every drive and run only the ones they volunteer at. since / seen: when added and last signed in (admin only).
+export type Role = 'admin' | 'senior' | 'junior';
+export type Member = { id?: string; user: string; name: string; role: Role; since?: number; seen?: number | null };
+// a member asking to volunteer at one phase of a drive (id: their account)
+export type Ask = { drive: string; k: PhaseKey; id: string; user: string; status: 'pending' | 'approved' | 'denied'; at: number };
+export const lead = (m?: Member | null) => !!m && m.role !== 'junior';
+// who runs each phase: seniors every one, a junior those they volunteer at
+export const runs = (d: Drive, m: Member | null) =>
+  Object.fromEntries(phasesOf(d).map(p => [p.k, lead(m) || (!!m && p.crew.includes(m.user))])) as Partial<Record<PhaseKey, boolean>>;
+// Why a member may not do this to a drive, or ''. Seniors may do anything; a junior only within the phases they volunteer
+// at (a talk's or test's attendance, venue and time; the interviews' attendance, board, rounds and cabins), and never
+// change who volunteers or which phases there are.
+export function refuse(d: Drive, m: Member | null, a: Action | { type: 'undo' } | { type: 'takeOver' }): string {
+  if (lead(m)) return '';
+  const on = runs(d, m), only = (k: PhaseKey) => `Only the ${PHASES[k].toLowerCase()}${k === 'int' ? "'" : "'s"} volunteers can do this. Ask to volunteer from the drive's page`;
+  if (a.type !== 'plan') { const k = 'k' in a && a.k ? a.k : 'int'; return on[k] ? '' : only(k) }
+  const was = phasesOf(d), next = Array.isArray(a.plan?.phases) ? a.plan.phases : [];
+  if (next.length !== was.length || next.some(p => !was.some(x => x.k === p.k))) return 'Only senior members can add or remove phases';
+  for (const p of next) {
+    const x = was.find(x => x.k === p.k)!;
+    if (JSON.stringify(p.crew ?? []) !== JSON.stringify(x.crew)) return 'Only senior members can change who volunteers';
+    if ((p.venue !== x.venue || p.at !== x.at) && !on[p.k]) return only(p.k);
+  }
+  return '';
+}
+const USERNAME = /^[a-z0-9][a-z0-9._-]{1,31}$/;
 export type DriveConfig = { company: string; date: string; location: string; rounds: string[]; rooms: { panel?: string; rounds: number[] }[]; students: Row[] };
 
 export type Action =
@@ -97,33 +124,6 @@ export const missed = (d: Drive) => (d.pool ?? []).flatMap(s => {
 });
 // where an interview student was marked absent: at the interviews' attendance, or later, when due for a round
 export const absentAt = (d: Drive, s: Student) => !d.attendance || s.t <= d.attendance ? 'Interview attendance' : rname(d, s.done);
-// ponytail: fixed list for now; make it editable when the committee changes
-export const VOLUNTEERS = [
-  'Vansh Mehta',
-  'Srikara Sasank',
-  'Aashvi Agrawal',
-  'Anusha',
-  'Arjun Wad',
-  'Dev Kewlani',
-  'Gayatrie',
-  'Pratham Gandhi',
-  'Nithyanta Srinivas',
-  'Shivansh Srivastava',
-  'Riya Dixit',
-  'Riddhi Jain',
-  'Tushar Maiyya',
-  'Dhruvi Dave',
-  'Eshani',
-  'Rucha',
-  'Rudraksha',
-  'Swasti Gupta',
-  'Tanvi Ghule',
-  'Satvik',
-  'Yuvika Das',
-  'Shriya Singh',
-  'Rishit Agrawal',
-  'Rosanne',
-];
 // drives from before phases are just their interviews
 export const phasesOf = (d: Drive): Phase[] => d.phases?.map(p => ({ ...p, crew: p.crew ?? [] })) ?? [{ k: 'int', venue: d.location, at: d.date, crew: [] }];
 
@@ -134,7 +134,7 @@ export function cleanPlan(p: Partial<Plan>): Omit<Plan, 'students'> {
   const given = Array.isArray(p.phases) ? p.phases : [];
   const phases = ORDER.flatMap(k => given.filter(x => x?.k === k).slice(0, 1)).map(x => ({
     k: x.k, venue: String(x.venue ?? '').trim().slice(0, 80), at: at(x.at), // '' until it is decided
-    crew: [...new Set(Array.isArray(x.crew) ? x.crew : [])].filter(n => VOLUNTEERS.includes(n)), // each volunteer once per phase
+    crew: [...new Set(Array.isArray(x.crew) ? x.crew : [])].filter(n => USERNAME.test(n)), // each once per phase; names from before accounts drop off
   }));
   if (!phases.length) throw Error('Pick at least one phase');
   const missing = phases.find(x => !x.at);
@@ -144,16 +144,16 @@ export function cleanPlan(p: Partial<Plan>): Omit<Plan, 'students'> {
   if (early > 0) throw Error(`The ${PHASES[phases[early].k].toLowerCase()} has to be after the ${PHASES[phases[early - 1].k].toLowerCase()}`);
   return { kind: p.kind as Kind, phases };
 }
-// Where each phase stands at `now`. A phase goes live at its start time: a talk or test until it is ended (a talk after
-// two hours at most), interviews while their board runs; interviews whose time has come are ready to start. A phase is
-// done once it has ended or a later phase has begun.
+// Where each phase stands at `now`. A talk or test goes live at its start time (not before, even when a test's attendance
+// is taken early) until it is ended, a talk after two hours at most; interviews while their board runs, ready to start
+// once their day has come. A phase is done once it has ended or a later phase has begun.
 export type PhaseState = 'Upcoming' | 'Today' | 'Live' | 'Done';
 export function phaseStates(d: Drive, now: number): PhaseState[] {
   const today = localDate(now);
   const own = phasesOf(d).map((p): PhaseState => {
     if (p.k === 'int' && d.status === 'done') return 'Done';
     if (p.k === 'int') return called(d) ? 'Live' : p.at.slice(0, 10) === today ? 'Today' : 'Upcoming'; // their time is only a reference: they start with the first student called
-    if (p.k === 'oa') return p.ended ? 'Done' : p.roll ? 'Live' : p.at.slice(0, 10) === today ? 'Today' : 'Upcoming'; // likewise: live once its attendance starts, until it is ended
+    if (p.ended) return 'Done';
     if (now < startOf(p)) return p.at.slice(0, 10) === today ? 'Today' : 'Upcoming';
     return now < endOf(p) ? 'Live' : 'Done';
   });
@@ -331,7 +331,7 @@ export function newDrive(c: DriveConfig, id: string, t = Date.now()): Drive {
 export function summary(d: Drive) {
   const n = (f: (s: Student) => boolean) => d.students.filter(f).length, st = phaseStates(d, Date.now());
   return {
-    phases: phasesOf(d).map((p, i) => ({ k: p.k, at: p.at, venue: p.venue, state: st[i] })), // each shows on the calendar on its own day
+    phases: phasesOf(d).map((p, i) => ({ k: p.k, at: p.at, venue: p.venue, state: st[i], crew: p.crew })), // each shows on the calendar on its own day
     id: d.id, company: d.company, kind: d.kind, date: d.date, location: d.location, status: d.status, startedAt: d.startedAt, endedAt: d.endedAt,
     rounds: d.rounds.length, rooms: d.rooms.length, students: d.pool?.length ?? d.students.length,
     blr: n(s => s.campus === 'BLR'), mpl: n(s => s.campus === 'MPL'),
@@ -537,8 +537,9 @@ export function apply(d: Drive, a: Action, t = Date.now()): string | undefined {
         if (d.status !== 'planned' && eligible(d, 'int').includes(s)) apply(d, { type: 'addStudents', rows: [s] }, t);
         break;
       }
-      if (p.k === 'ppt' && t < startOf(p)) throw Error(`The ${what} hasn't started yet`);
-      // an OA's attendance can start whenever, once the phases before it (who may take it) are over
+      // a PPT's attendance opens at its time; an OA's earlier too, once the phases before it (who may take it) are over.
+      // Either ends only once it is live, from its time
+      if (t < startOf(p) && (p.k === 'ppt' || a.type === 'endPhase')) throw Error(`The ${what} hasn't started yet${p.k === 'oa' ? '. It can be ended once it goes live at its time' : ''}`);
       if (a.type === 'phaseRoll' && !p.roll) { const st = phaseStates(d, t), on = phasesOf(d).findIndex(x => x.k === a.k); if (st.slice(0, on).some(x => x !== 'Done')) throw Error(`End the ${SHORT[phasesOf(d)[on - 1].k]} first`) }
       if (t >= endOf(p)) throw Error(`The ${what} has ended`);
       if (a.type === 'endPhase') {

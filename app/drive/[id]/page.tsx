@@ -1,7 +1,7 @@
 'use client';
 import { useParams, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { LABEL, ORDER, PHASES, SHORT, called, eligible, missed, endOf, forecast, phasesOf, startOf, type Drive, type Phase, type PhaseKey, type Pupil, type Status } from '@/lib/drive';
+import { LABEL, ORDER, PHASES, SHORT, called, lead, eligible, missed, endOf, forecast, phasesOf, startOf, type Drive, type Phase, type PhaseKey, type Pupil, type Status } from '@/lib/drive';
 import { Board, Camp, span } from '../../board';
 import { Activity, Setup, Students, Summary } from '../../panels';
 import { DriveDash } from '../../phases';
@@ -53,13 +53,14 @@ export default function Desk() {
     if (!await ask(`Delete the ${d.company} drive?`, `${longDate(d.date)}. It disappears from the dashboard and calendar. The file is kept in data/trash.`, 'Delete drive', true)) return;
     try { await post(`/api/drives/${id}`, undefined, 'DELETE'); router.push('/') } catch { /* already shown */ }
   };
-  // a drive opens on its phases; the interview dashboard is one of them, left through the drive's name in the top bar
+  // a drive opens on its phases; the interview dashboard is one of them, left through the drive's name in the top bar.
+  // Each phase's attendance, and the interview board, only for those who run that phase (x.can: a senior, or its volunteers).
   const out = () => setInside(false);
-  if (d.status === 'planned' || !inside) {
+  if (d.status === 'planned' || !inside || !x.can.int) {
     const ap = phasesOf(d).find(p => p.k === att);
-    if (ap && Date.now() < endOf(ap)) return <PhaseRoll d={d} p={ap} send={send} back={() => setAtt(null)} />;
+    if (ap && x.can[ap.k] && Date.now() < endOf(ap)) return <PhaseRoll d={d} p={ap} send={send} back={() => setAtt(null)} />;
     const attend = (p: Phase) => { if (!p.roll) send({ type: 'phaseRoll', k: p.k }); setAtt(p.k) };
-    return <DriveDash d={d} send={send} onDelete={del} open={() => setInside(true)} attend={attend} />;
+    return <DriveDash d={d} send={send} onDelete={del} open={() => setInside(true)} attend={attend} me={x.me} can={x.can} asks={x.asks} />;
   }
   if (d.status === 'live' && !d.attendance) return <Attendance d={d} send={send} also={x.also} out={out} />;
 
@@ -74,7 +75,7 @@ export default function Desk() {
           <DeskMenu items={[[<><Icon n="logs" />Logs</>, () => setTab('log')]]} />
         </> : done ? <>
           <button onClick={() => send({ type: 'reopen' })} title="Reopen this drive" aria-label="Reopen drive"><Icon n="reopen" /><span className="hide-sm">Reopen drive</span></button>
-          <button className="icon ghost" onClick={del} title="Delete this drive" aria-label="Delete this drive"><Icon n="trash" /></button>
+          {lead(x.me) && <button className="icon ghost" onClick={del} title="Delete this drive" aria-label="Delete this drive"><Icon n="trash" /></button>}
           <DeskMenu items={[[<><Icon n="logs" />Logs</>, () => setTab('log')]]} />
         </> : <>
           <button className="icon ghost" disabled={!x.undo} onClick={() => send({ type: 'undo' })} title={x.undo ? `Undo: ${x.undo} (Ctrl/⌘+Z)` : 'Nothing to undo'} aria-label="Undo"><Icon n="undo" /></button>
@@ -125,7 +126,7 @@ const Attendance = ({ d, send, also, out }: { d: Drive; send: Send; also: Seen; 
 const PhaseRoll = ({ d, p, send, back }: { d: Drive; p: Phase; send: Send; back: () => void }) => (
   <RollCall d={d} home={back} people={eligible(d, p.k)} roll={p.roll} badge={`${SHORT[p.k]} attendance`} send={send}
     earlier={missed(d).filter(m => ORDER.indexOf(m.k) < ORDER.indexOf(p.k))}
-    meta={<div className="pmeta"><span><Icon n="roll" s={14} />{PHASES[p.k]}</span><span><Icon n="clock" s={14} />{p.k === 'ppt' ? `Started ${tm(startOf(p))} · ends by ${tm(endOf(p))}` : `Set for ${tm(startOf(p))} · runs until you end it`}</span>{p.venue && <span><Icon n="pin" s={14} />{p.venue}</span>}</div>}
+    meta={<div className="pmeta"><span><Icon n="roll" s={14} />{PHASES[p.k]}</span><span><Icon n="clock" s={14} />{p.k === 'ppt' ? `Started ${tm(startOf(p))} · ends by ${tm(endOf(p))}` : Date.now() < startOf(p) ? `Goes live at ${tm(startOf(p))} · can be ended from then` : `Started ${tm(startOf(p))} · runs until you end it`}</span>{p.venue && <span><Icon n="pin" s={14} />{p.venue}</span>}</div>}
     mark={(id, absent, reason) => send({ type: 'phaseRoll', k: p.k, id, absent, reason })} start={() => send({ type: 'phaseRoll', k: p.k })}
     intro={`${eligible(d, p.k).length} eligible students.`}
     bar={<button onClick={back}><Icon n="left" />Back to drive</button>} />

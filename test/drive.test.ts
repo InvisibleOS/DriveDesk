@@ -1,7 +1,7 @@
 // npm test — onboarding, CSV import, the call → finish → result flow, ending a drive, and old saves upgrading
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { absentAt, alsoIn, apply, missed, forecast, fits, migrate, upNext, newDrive, parseStudents, planDrive, roundOpen, statusLabel, summary, toTable, VOLUNTEERS, phaseStates, eligible, waiting, type Action, type DriveConfig } from '../lib/drive.ts';
+import { absentAt, alsoIn, apply, missed, forecast, fits, migrate, upNext, newDrive, parseStudents, planDrive, roundOpen, statusLabel, summary, toTable, lead, refuse, runs, phaseStates, eligible, waiting, type Action, type DriveConfig } from '../lib/drive.ts';
 
 const cfg = (over: Partial<DriveConfig> = {}): DriveConfig => ({
   company: 'Optum', date: '2026-10-23', location: 'J Block Interview Cabins', rounds: ['Tech', 'HR', 'Final'],
@@ -90,11 +90,24 @@ test('a drive booked for a later day is set up on the day', () => {
 
 test('a configured drive keeps its phases in order and is set up for interviews on the day', () => {
   const plan = { kind: 'P' as const, phases: [{ k: 'int' as const, venue: 'J Block Interview Cabins', at: '2026-11-03T10:00', crew: [] },
-    { k: 'ppt' as const, venue: 'AB4 Auditorium', at: '2026-11-01T09:00', crew: [VOLUNTEERS[0], VOLUNTEERS[0], 'Somebody else', VOLUNTEERS[1]] }, { k: 'int' as const, venue: '', at: '2026-11-09T10:00', crew: [] }], students: [{ reg: '', name: 'Asha', campus: 'BLR' as const }] };
+    { k: 'ppt' as const, venue: 'AB4 Auditorium', at: '2026-11-01T09:00', crew: ['riddhi', 'riddhi', 'Riddhi Jain', 'shivansh'] }, { k: 'int' as const, venue: '', at: '2026-11-09T10:00', crew: [] }], students: [{ reg: '', name: 'Asha', campus: 'BLR' as const }] };
   const d = planDrive({ company: 'Optum', plan }, 'p', 1000);
   assert.deepEqual(d.phases!.map(p => p.k), ['ppt', 'int'], 'fixed order, each phase once');
   assert.deepEqual([d.status, d.date, d.location, d.kind], ['planned', '2026-11-03', 'J Block Interview Cabins', 'P'], 'on the calendar on interview day');
-  assert.deepEqual(d.phases![0].crew, [VOLUNTEERS[0], VOLUNTEERS[1]], 'each volunteer once per phase; unknown names dropped');
+  assert.deepEqual(d.phases![0].crew, ['riddhi', 'shivansh'], 'each volunteer once per phase, by username; names from before accounts dropped');
+  assert.deepEqual([lead({ user: 'pcom', name: 'PCOM', role: 'admin' }), lead({ user: 's', name: 'S', role: 'senior' }), lead({ user: 'r', name: 'R', role: 'junior' }), lead(null)], [true, true, false, false]);
+  // a junior runs only the phases they volunteer at
+  const riddhi = { user: 'riddhi', name: 'Riddhi Jain', role: 'junior' as const }, tanvi = { user: 'tanvi', name: 'Tanvi Ghule', role: 'junior' as const };
+  const ph = d.phases!, moved = (k: string, p: object) => ({ type: 'plan' as const, plan: { kind: 'P' as const, phases: ph.map(x => x.k === k ? { ...x, ...p } : x) } });
+  assert.deepEqual([runs(d, riddhi), runs(d, tanvi), runs(d, { ...tanvi, role: 'senior' })], [{ ppt: true, int: false }, { ppt: false, int: false }, { ppt: true, int: true }]);
+  assert.equal(refuse(d, riddhi, { type: 'phaseRoll', k: 'ppt' }), '', 'her own phase');
+  assert.match(refuse(d, riddhi, { type: 'attendance' }), /interviews' volunteers/, 'not the interviews');
+  assert.match(refuse(d, tanvi, { type: 'phaseRoll', k: 'ppt' }), /pre-placement talk's volunteers/, 'not a phase she does not volunteer at');
+  assert.equal(refuse(d, riddhi, moved('ppt', { venue: 'AB5 Auditorium' })), '', 'moves her own phase');
+  assert.match(refuse(d, riddhi, moved('int', { at: '2026-11-04T10:00' })), /interviews' volunteers/);
+  assert.match(refuse(d, riddhi, moved('ppt', { crew: ['riddhi', 'tanvi'] })), /who volunteers/);
+  assert.match(refuse(d, riddhi, { type: 'plan', plan: { kind: 'P', phases: [ph[1]] } }), /add or remove phases/);
+  assert.equal(refuse(d, { ...tanvi, role: 'senior' }, { type: 'attendance' }), '', 'seniors run every phase');
   assert.throws(() => planDrive({ company: 'Optum', plan: { ...plan, kind: 'X' as never } }, 'p'), /type/);
   assert.throws(() => planDrive({ company: 'Optum', plan: { ...plan, phases: [{ k: 'oa', venue: '', at: '', crew: [] }] } }, 'p'), /online assessment/);
   assert.throws(() => planDrive({ company: 'Optum', plan: { ...plan, phases: [plan.phases[0], { ...plan.phases[1], at: '2026-11-03T10:00' }] } }, 'p'), /interviews has to be after the pre-placement talk/, 'same time is not after');
@@ -120,10 +133,12 @@ test('a phase goes live at its start time and is done once it ends or the next o
   assert.deepEqual(phaseStates(d, at('2026-11-01T11:59')), ['Live', 'Upcoming', 'Upcoming']);
   assert.deepEqual(phaseStates(d, at('2026-11-01T12:00')), ['Done', 'Upcoming', 'Upcoming'], 'a talk ends two hours after it starts');
   assert.deepEqual(phaseStates(d, at('2026-11-02T08:00')), ['Done', 'Today', 'Upcoming']);
-  assert.deepEqual(phaseStates(d, at('2026-11-02T14:30')), ['Done', 'Today', 'Upcoming'], 'an OA\'s time is only a reference');
+  assert.deepEqual(phaseStates(d, at('2026-11-02T14:00')), ['Done', 'Live', 'Upcoming'], 'an OA goes live at its time too');
   assert.throws(() => apply(d, { type: 'phaseRoll', k: 'oa' }, at('2026-11-01T11:00')), /End the PPT first/, 'not while the PPT runs');
   apply(d, { type: 'phaseRoll', k: 'oa' }, at('2026-11-02T13:00'));
-  assert.deepEqual(phaseStates(d, at('2026-11-02T13:01')), ['Done', 'Live', 'Upcoming'], 'live once its attendance starts, before its time too');
+  assert.deepEqual(phaseStates(d, at('2026-11-02T13:01')), ['Done', 'Today', 'Upcoming'], 'its attendance can be taken early, but it is live only from its time');
+  assert.throws(() => apply(d, { type: 'endPhase', k: 'oa' }, at('2026-11-02T13:30')), /hasn't started yet/, 'and it can be ended only once live');
+  assert.deepEqual(phaseStates(d, at('2026-11-02T14:00')), ['Done', 'Live', 'Upcoming']);
   assert.deepEqual(phaseStates(d, at('2026-11-04T10:00')), ['Done', 'Live', 'Today'], 'an OA stays live until it is ended');
   apply(d, { type: 'endPhase', k: 'oa' }, at('2026-11-04T09:00'));
   apply(d, { type: 'setup', config: cfg({ company: 'Optum', date: '2026-11-04' }) });

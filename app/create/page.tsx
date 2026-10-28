@@ -2,10 +2,10 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { KINDS, ORDER, PHASES, SHORT, type Campus, type Kind, type Phase, type PhaseKey, type Row } from '@/lib/drive';
+import { KINDS, ORDER, PHASES, SHORT, lead, type Campus, type Kind, type Phase, type PhaseKey, type Row } from '@/lib/drive';
 import { StudentImport } from '../panels';
 import { PICON, PhaseColumns } from '../phases';
-import { Icon, TopBar, post, toast } from '../ui';
+import { Icon, TopBar, post, toast, usePeople } from '../ui';
 
 // Configuring a new drive: the company, its type, which phases it has (always in the same order) with where and when
 // each happens and its volunteers, and the list of students. Creating it opens the drive dashboard; interviews are set up there on the day.
@@ -22,6 +22,14 @@ export default function Create() {
     const qd = new URLSearchParams(window.location.search).get('date');
     if (qd && /^\d{4}-\d{2}-\d{2}$/.test(qd)) setInfo(i => Object.fromEntries(ORDER.map(k => [k, { ...i[k], at: `${qd}T09:00` }])) as Record<PhaseKey, Phase>);
   }, []);
+  const people = usePeople();
+  if (people && !lead(people.me)) return ( // seniors create drives; a junior reaching this page by its address is sent back
+    <div className="app">
+      <TopBar title="New drive" />
+      <main><div className="emptyst"><div><h2>Only senior members create drives</h2><p className="meta">Every drive shows on your dashboard, and you can volunteer at the ones coming up.</p></div>
+        <div className="row"><Link className="btn" href="/"><Icon n="left" />All drives</Link></div></div></main>
+    </div>
+  );
   const phases = ORDER.filter(k => on.includes(k)).map(k => info[k]);
   const flip = (k: PhaseKey) => on.includes(k) ? on.length > 1 ? setOn(on.filter(x => x !== k)) : toast('A drive needs at least one phase', true) : setOn([...on, k]);
   const create = async () => {

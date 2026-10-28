@@ -1,4 +1,4 @@
-import { dispatch, guard, get, payload, remove } from '@/lib/store';
+import { dispatch, guard, get, payload, ready, remove } from '@/lib/store';
 
 type Ctx = { params: Promise<{ id: string }> };
 const missing = () => Response.json({ error: 'Drive not found' }, { status: 404 });
@@ -9,7 +9,7 @@ export async function GET(req: Request, { params }: Ctx) {
   if (no) return no;
   const l = get((await params).id);
   if (!l) return missing();
-  if (new URL(req.url).searchParams.has('once')) return new Response(payload(l), { headers: { 'Content-Type': 'application/json' } });
+  if (new URL(req.url).searchParams.has('once')) { await ready(); return new Response(payload(l), { headers: { 'Content-Type': 'application/json' } }) }
 
   const enc = new TextEncoder();
   let send: (p: string) => void, ping: ReturnType<typeof setInterval>;

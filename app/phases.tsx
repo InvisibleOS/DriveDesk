@@ -1,16 +1,9 @@
 'use client';
-import { useState } from 'react';
-import { KINDS, ORDER, PHASES, SHORT, VOLUNTEERS, absentAt, called, occ, canAdd, endOf, startOf, eligible, isVirtual, venuesOf, localDate, phasesOf, removable, type Drive, type Kind, type Phase, type PhaseKey, type PhaseState, type Pupil, phaseStates } from '@/lib/drive';
+import { Children, useState } from 'react';
+import { KINDS, ORDER, PHASES, SHORT, absentAt, called, lead as isLead, occ, canAdd, endOf, startOf, eligible, isVirtual, venuesOf, localDate, phasesOf, removable, type Ask, type Drive, type Kind, type Member, type Phase, type PhaseKey, type PhaseState, type Pupil, phaseStates } from '@/lib/drive';
 import { Camp } from './board';
 import { CabinsEdit, RoundsEdit, Summary, Venue, exportAttendance } from './panels';
-import { DeskMenu, Field, Icon, More, PageHead, Sheet, Stepper, TopBar, ask, tm, useNow, useSheet, type Send } from './ui';
-
-// '2026-10-26T10:00' → 'Mon, 26 Oct · 10:00'
-export const when = (at: string) => {
-  if (!at) return 'No date yet';
-  const z = new Date(at.length > 10 ? at : `${at}T00:00`), day = z.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' });
-  return at.length > 10 ? `${day} · ${tm(z.getTime())}` : day;
-};
+import { Av, DeskMenu, Field, Icon, More, PageHead, Sheet, Stepper, TopBar, ask, nameOf, post, tm, toast, useNow, usePeople, useSheet, when, type Send } from './ui';
 // the timeline's time: a PPT or OA from its set time, the interviews from the first call; once over, start – end
 const ran = (d: Drive, p: Phase, s: PhaseState) => {
   if (s === 'Upcoming' || s === 'Today') return when(p.at);
@@ -50,21 +43,51 @@ export function PhaseColumns({ phases, onChange }: { phases: Phase[]; onChange: 
   );
 }
 
-// A phase's volunteers: a chip per person (× takes them off), and + Add with a menu of those not on it yet.
-const initials = (n: string) => n.split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase();
-export const Av = ({ n }: { n: string }) => <i className="av" aria-hidden>{initials(n)}</i>;
-export function Crew({ names, onChange }: { names: string[]; onChange: (n: string[]) => void }) {
-  const free = VOLUNTEERS.filter(n => !names.includes(n));
+// A phase's volunteers (usernames): a chip per member, marked when it's you. With onChange (seniors) × takes someone off
+// and + Add offers the members not on it yet; names from before accounts don't show. children: more chips or buttons.
+export function Crew({ names, onChange, children }: { names: string[]; onChange?: (n: string[]) => void; children?: React.ReactNode }) {
+  const p = usePeople(), me = p?.me?.user;
+  const on = names.filter(u => p?.members.some(m => m.user === u));
+  const free = (p?.members ?? []).filter(m => m.role !== 'admin' && !names.includes(m.user));
   return (
     <div className="crew">
-      {names.map(name => (
-        <span key={name} className="vchip"><Av n={name} />{name}
-          <button className="icon ghost" onClick={() => onChange(names.filter(x => x !== name))} title={`Remove ${name}`} aria-label={`Remove ${name}`}><Icon n="x" s={12} /></button>
+      {on.map(u => (
+        <span key={u} className={`vchip${u === me ? ' me' : ''}`}><Av n={nameOf(p, u)} />{nameOf(p, u)}{u === me && <small>You</small>}
+          {onChange && <button className="icon ghost" onClick={() => onChange(names.filter(x => x !== u))} title={`Remove ${nameOf(p, u)}`} aria-label={`Remove ${nameOf(p, u)}`}><Icon n="x" s={12} /></button>}
         </span>
       ))}
-      {free.length > 0 && <More label="Add a volunteer" className="sm ghost vadd" down items={free.map(n => [<><Av n={n} />{n}</>, () => onChange([...names, n])])}>
-        <Icon n="plus" s={13} />{names.length ? 'Add' : 'Add volunteer'}</More>}
+      {children}
+      {onChange && free.length > 0 && <More label="Add a volunteer" className="sm ghost vadd" down items={free.map(m => [<><Av n={m.name} />{m.name}</>, () => onChange([...names, m.user])])}>
+        <Icon n="plus" s={13} />{on.length ? 'Add' : 'Add volunteer'}</More>}
+      {onChange && !free.length && !on.length && p && <span className="faint">Add members on the Accounts page to pick volunteers</span>}
+      {!onChange && !on.length && !Children.toArray(children).length && <span className="faint">None yet</span>}
     </div>
+  );
+}
+
+// A phase's volunteers on its card. Seniors manage them and approve or decline who asked; a junior asks to volunteer at
+// any phase that isn't over (withdraws while it waits, asks again if declined). Asking alone lets them edit nothing: only
+// being on the volunteers does. Asking needs the internet: requests live in the shared copy.
+function Helpers({ d, p, s, me, asks, onChange }: { d: Drive; p: Phase; s: PhaseState; me: Member | null; asks: Ask[]; onChange: (c: string[]) => void }) {
+  const people = usePeople(), boss = isLead(me), mine = asks.find(a => a.k === p.k && a.user === me?.user);
+  const waiting = boss ? asks.filter(a => a.k === p.k && a.status === 'pending' && !p.crew.includes(a.user)) : [];
+  const act = (what: 'ask' | 'withdraw' | 'approve' | 'deny', user?: string) =>
+    post('/api/volunteers', { drive: d.id, k: p.k, what, user }).then(j => { if (j.msg) toast(j.msg) }, () => {});
+  const open = d.status !== 'done' && s !== 'Done';
+  const name = (u: string) => nameOf(people, u);
+  return (
+    <Crew names={p.crew} onChange={boss ? onChange : undefined}>
+      {waiting.map(a => (
+        <span key={a.user} className="vchip req" title={`${name(a.user)} asked to volunteer`}><Av n={name(a.user)} />{name(a.user)}<small>Asked</small>
+          <button className="icon ghost yes" onClick={() => act('approve', a.user)} title="Approve" aria-label={`Approve ${name(a.user)}`}><Icon n="check" s={13} /></button>
+          <button className="icon ghost" onClick={() => act('deny', a.user)} title="Decline" aria-label={`Decline ${name(a.user)}`}><Icon n="x" s={12} /></button>
+        </span>
+      ))}
+      {!boss && me && !p.crew.includes(me.user) && (
+        mine?.status === 'pending' ? <span className="vme">Requested<button className="link" onClick={() => act('withdraw')}>Withdraw</button></span>
+        : mine?.status === 'denied' ? <span className="vme">Not approved{open && <button className="link" onClick={() => act('ask')}>Ask again</button>}</span>
+        : open && <button className="sm vask" onClick={() => act('ask')}><Icon n="hand" s={14} />Volunteer</button>)}
+    </Crew>
   );
 }
 
@@ -80,23 +103,28 @@ export const Mini = ({ items }: { items: [string, React.ReactNode, string?][] })
 function lead(d: Drive, p: Phase, s: PhaseState) {
   const days = Math.round((Date.parse(p.at.slice(0, 10)) - Date.parse(localDate(Date.now()))) / 864e5);
   if (s === 'Done') return `Held on ${when(p.k === 'int' && called(d) ? localDate(d.startedAt) : p.at.slice(0, 10))}`; // interviews: the day they really ran
-  if (s === 'Live') return p.k === 'ppt' ? `Live since ${tm(Date.parse(p.at))}` : p.k !== 'int' ? 'Live now' : called(d) ? `Running since ${tm(d.startedAt)}` : d.attendance ? 'Attendance taken, no one called yet' : 'Attendance open';
-  if (days < 0) return `Set for ${when(p.at.slice(0, 10))}`; // an OA or interviews not begun after their date: the time was only a reference
+  if (s === 'Live') return p.k !== 'int' ? `Live since ${tm(startOf(p))}` : called(d) ? `Running since ${tm(d.startedAt)}` : d.attendance ? 'Attendance taken, no one called yet' : 'Attendance open';
+  if (days < 0) return `Set for ${when(p.at.slice(0, 10))}`; // interviews not begun after their date: their time was only a reference
   if (!days) return p.at.length > 10 ? `Today at ${tm(new Date(p.at).getTime())}` : 'Today';
   return days === 1 ? 'Tomorrow' : `In ${days} days`;
 }
 
 // The whole drive: a timeline of its phases, and under each one a column with where, when, who and how it went.
 // Phases it doesn't have yet are added from the top bar. The company and type of offer, set when it was created, stay as they are.
-export function DriveDash({ d, send, onDelete, open, attend }: { d: Drive; send: Send; onDelete: () => void; open: () => void; attend: (p: Phase) => void }) {
+// can: the phases the signed-in member runs (a senior every one, a junior those they volunteer at); the rest is read-only
+// for them (the students too), with Volunteer on the phases still ahead. Only seniors add, remove or delete.
+export function DriveDash({ d, send, onDelete, open, attend, me, can, asks }: {
+  d: Drive; send: Send; onDelete: () => void; open: () => void; attend: (p: Phase) => void; me: Member | null; can: Partial<Record<PhaseKey, boolean>>; asks: Ask[];
+}) {
+  const boss = isLead(me);
   const ph = phasesOf(d), st = phaseStates(d, useNow()); // states move on with the clock
   const plan = (p: Partial<{ kind: Kind; phases: Phase[] }>) => send({ type: 'plan', plan: { kind: d.kind ?? 'P', phases: ph, ...p } });
-  const edit = (k: PhaseKey, p: Partial<Phase>) => plan({ phases: ph.map(x => x.k === k ? { ...x, ...p } : x) });
+  const change = (k: PhaseKey, p: Partial<Phase>) => plan({ phases: ph.map(x => x.k === k ? { ...x, ...p } : x) });
   const addPhase = (k: PhaseKey) => plan({ phases: ORDER.flatMap(o => o === k ? [{ k, venue: '', at: slot(ph, k), crew: [] }] : ph.filter(x => x.k === o)) });
   const dropPhase = async (k: PhaseKey) => {
     if (await ask(`Remove the ${PHASES[k].toLowerCase()}?`, 'It comes off the drive with its venue, time and volunteers. You can add it again until the interviews begin.', 'Remove phase', true)) plan({ phases: ph.filter(x => x.k !== k) });
   };
-  const missing = canAdd(d) ? ORDER.filter(k => !ph.some(p => p.k === k)) : [];
+  const missing = boss && canAdd(d) ? ORDER.filter(k => !ph.some(p => p.k === k)) : [];
   const done = st.filter(s => s === 'Done').length;
   const li = Math.max(0, st.findLastIndex(s => s !== 'Upcoming')); // the latest phase that has begun, else the next one
   const [roster, showRoster] = useSheet(); // the uploaded list, with how each did at every phase so far
@@ -111,7 +139,7 @@ export function DriveDash({ d, send, onDelete, open, attend }: { d: Drive; send:
     <div className="app">
       <TopBar title={d.company} badge={<span className={`pill hide-sm ${state[1]}`}>{state[0]}</span>}>
         {missing.length > 0 && <More label="Add a phase" className="sm" down items={missing.map(k => [<><Icon n={PICON[k]} />{PHASES[k]}</>, () => addPhase(k)])}><Icon n="plus" s={14} />Add phase</More>}
-        <button className="icon ghost" onClick={onDelete} title="Delete this drive" aria-label="Delete this drive"><Icon n="trash" /></button>
+        {boss && <button className="icon ghost" onClick={onDelete} title="Delete this drive" aria-label="Delete this drive"><Icon n="trash" /></button>}
         <DeskMenu />
       </TopBar>
       <main className="dd">
@@ -123,7 +151,7 @@ export function DriveDash({ d, send, onDelete, open, attend }: { d: Drive; send:
           </div>}>
             <div className="row">
               {d.pool && <button onClick={showRoster}><Icon n="roll" />Students</button>}
-              {d.status === 'live' && d.attendance && <button className="primary" onClick={open}>Open board<Icon n="right" /></button>}
+              {can.int && d.status === 'live' && d.attendance && <button className="primary" onClick={open}>Open board<Icon n="right" /></button>}
             </div>
           </PageHead>
 
@@ -140,17 +168,18 @@ export function DriveDash({ d, send, onDelete, open, attend }: { d: Drive; send:
           </ol>
           <div className={`phs${ph.length === 1 ? ' one' : ''}`} style={{ '--n': ph.length } as React.CSSProperties}>
             {ph.map((p, i) => (
-              <PhaseCard key={p.k} d={d} p={p} s={st[i]}
-                settle={() => settle(p)} drop={ph.length > 1 && removable(d, st[i]) ? () => dropPhase(p.k) : undefined} crew={crew => edit(p.k, { crew })}>
-                {p.k === 'int' ? <Interviews d={d} p={p} s={st[i]} open={open} send={send} wait={st.slice(0, i).some(x => x !== 'Done')} />
-                  : <Turnout d={d} p={p} s={st[i]} send={send} attend={() => attend(p)} people={i ? undefined : people} wait={st.slice(0, i).some(x => x !== 'Done')} />}
+              <PhaseCard key={p.k} d={d} p={p} s={st[i]} settle={can[p.k] ? () => settle(p) : undefined}
+                drop={boss && ph.length > 1 && removable(d, st[i]) ? () => dropPhase(p.k) : undefined}
+                helpers={<Helpers d={d} p={p} s={st[i]} me={me} asks={asks} onChange={crew => change(p.k, { crew })} />}>
+                {p.k === 'int' ? <Interviews d={d} p={p} s={st[i]} open={open} send={send} edit={!!can.int} wait={st.slice(0, i).some(x => x !== 'Done')} />
+                  : <Turnout d={d} p={p} s={st[i]} send={send} edit={!!can[p.k]} attend={() => attend(p)} people={i ? undefined : people} wait={st.slice(0, i).some(x => x !== 'Done')} />}
               </PhaseCard>
             ))}
           </div>
         </div>
         <Roster d={d} sheet={roster} />
         <dialog ref={box} className="ask" onClose={() => setEd(null)}>
-          {ed && <form method="dialog" onSubmit={() => edit(ed.k, { venue: ed.venue.trim(), at: ed.at })}>
+          {ed && <form method="dialog" onSubmit={() => change(ed.k, { venue: ed.venue.trim(), at: ed.at })}>
             <h3>{PHASES[ed.k]}</h3>
             <label className="field">Venue<input list="venues" value={ed.venue} maxLength={80} placeholder="Type a place, or pick one" onChange={e => setEd({ ...ed, venue: e.target.value })} /></label>
             <datalist id="venues">{venuesOf(ed.k).map(o => <option key={o} value={o} />)}</datalist>
@@ -163,24 +192,25 @@ export function DriveDash({ d, send, onDelete, open, attend }: { d: Drive; send:
   );
 }
 
-// One phase's column: where, when and who, then (children) its attendance or interviews, with their option buttons
-// at the bottom. A drive with a single phase gets one wide card, the two halves side by side.
-function PhaseCard({ d, p, s, settle, drop, crew, children }: {
-  d: Drive; p: Phase; s: PhaseState; settle: () => void; drop?: () => void; crew: (c: string[]) => void; children: React.ReactNode;
+// One phase's column: where, when and who (helpers: its volunteers), then (children) its attendance or interviews, with
+// their option buttons at the bottom. A drive with a single phase gets one wide card, the two halves side by side.
+// settle / drop: editing its venue and time, removing it (for those who run the drive).
+function PhaseCard({ d, p, s, settle, drop, helpers, children }: {
+  d: Drive; p: Phase; s: PhaseState; settle?: () => void; drop?: () => void; helpers: React.ReactNode; children: React.ReactNode;
 }) {
   const name = PHASES[p.k];
   return (
     <section className={`ph-card${s === 'Live' ? ' live' : ''}`}>
         <header className="ph-h">
           <div><h2>{name}<span className={`pill ${TONE[s]}`}>{s}</span></h2><p className="meta">{lead(d, p, s)}</p></div>
-          {s !== 'Done' && <button className="icon ghost" onClick={settle} title="Edit the venue and time" aria-label={`Edit the ${name.toLowerCase()}'s venue and time`}><Icon n="settings" /></button>}{/* locked once over */}
+          {s !== 'Done' && settle && <button className="icon ghost" onClick={settle} title="Edit the venue and time" aria-label={`Edit the ${name.toLowerCase()}'s venue and time`}><Icon n="settings" /></button>}{/* locked once over */}
           {drop && <More label={`More for the ${name.toLowerCase()}`} down items={[[<><Icon n="trash" />Remove phase</>, drop]]} />}
         </header>
         <div className="ph-b">
           <dl className="ph-dl">
             <div><dt>Venue</dt><dd>{p.venue || <span className="faint">Not set yet</span>}</dd></div>
             <div><dt>When</dt><dd>{ran(d, p, s)}</dd></div>
-            <div><dt>Volunteers</dt><dd><Crew names={p.crew} onChange={crew} /></dd></div>
+            <div><dt>Volunteers</dt><dd>{helpers}</dd></div>
           </dl>
           {children}
         </div>
@@ -200,21 +230,27 @@ export async function endPhase(d: Drive, p: Phase, send: Send) {
 
 // A talk's or test's side of its card: while it is live, its attendance and ending it; once over, who came and who
 // missed it, with a way to let anyone who missed it into the phases after it.
-function Turnout({ d, p, s, send, attend, people, wait }: { d: Drive; p: Phase; s: PhaseState; send: Send; attend: () => void; people?: () => void; wait: boolean }) {
+function Turnout({ d, p, s, send, edit, attend, people, wait }: { d: Drive; p: Phase; s: PhaseState; send: Send; edit: boolean; attend: () => void; people?: () => void; wait: boolean }) {
   const [sheet, show] = useSheet();
   const all = eligible(d, p.k), roll = p.roll, off = all.filter(x => roll && x.id in roll), what = SHORT[p.k];
   const virtual = isVirtual(p.venue); // attendance is optional; without it everyone stays eligible
   const head = <div className="ph-xh">Attendance{virtual && s !== 'Done' && <span className="tag">Optional · virtual</span>}</div>;
   const counts = <Mini items={[['Eligible', all.length], ['Present', all.length - off.length, 'ok'], ['Absent', off.length, 'abs']]} />;
-  // a PPT's attendance opens at its time; an OA's whenever, its time only a reference, once the phases before it are over
-  if (s === 'Live' || (p.k === 'oa' && s !== 'Done')) return (
+  // a PPT's attendance opens at its time; an OA's earlier too, once the phases before it are over. Either goes live, and
+  // can be ended, only from its time
+  const live = s === 'Live', today = p.at.slice(0, 10) === localDate(Date.now());
+  const tail = p.k === 'ppt' ? ' It ends by itself two hours after it starts.' : !roll && wait ? ' Attendance opens once the earlier phases end.'
+    : live ? ' It runs until you end it.' : ` It goes live ${today ? `at ${tm(startOf(p))}` : `on ${when(p.at)}`}, and can be ended from then.`;
+  if (live || (p.k === 'oa' && s !== 'Done')) return (
     <div className="ph-x">{head}
       {roll && counts}
-      <p className="meta">{roll ? '' : virtual ? `${all.length} eligible students. Without attendance, all of them stay eligible.` : `${all.length} eligible students. Take attendance before ending the ${what}.`}{p.k === 'ppt' ? ' It ends by itself two hours after it starts.' : !roll && wait ? ' Attendance opens once the earlier phases end.' : ' It runs until you end it.'}</p>
+      <p className="meta">{roll ? '' : virtual ? `${all.length} eligible students. Without attendance, all of them stay eligible.` : `${all.length} eligible students. Take attendance before ending the ${what}.`}{tail}</p>
       <div className="ph-acts">
         {people && !roll && <button onClick={people}><Icon n="roll" />View students</button>}
-        <button className="danger soft" disabled={!roll && !virtual} title={!roll && !virtual ? 'Take attendance first' : undefined} onClick={() => endPhase(d, p, send)}><Icon n="flag" />End {what}</button>
-        <button className="primary" disabled={!roll && wait} title={!roll && wait ? 'The earlier phases decide who takes it: end them first' : undefined} onClick={attend}><Icon n="roll" />{roll ? 'Continue attendance' : 'Take attendance'}</button>
+        {edit && <>
+          {live && <button className="danger soft" disabled={!roll && !virtual} title={!roll && !virtual ? 'Take attendance first' : undefined} onClick={() => endPhase(d, p, send)}><Icon n="flag" />End {what}</button>}
+          <button className="primary" disabled={!roll && wait} title={!roll && wait ? 'The earlier phases decide who takes it: end them first' : undefined} onClick={attend}><Icon n="roll" />{roll ? 'Continue attendance' : 'Take attendance'}</button>
+        </>}
       </div>
     </div>
   );
@@ -226,9 +262,9 @@ function Turnout({ d, p, s, send, attend, people, wait }: { d: Drive; p: Phase; 
       {counts}
       <div className="ph-acts"><button onClick={show}><Icon n="eye" />View attendance</button></div>
       <Sheet sheet={sheet} title={`${PHASES[p.k]} attendance`} count={all.length} tools={<button className="sm" onClick={() => exportAttendance(d, p)}><Icon n="download" s={14} />Download</button>}>
-        <AttendanceTable all={all} absent={off} why={x => roll[x.id]} edit={(x, reason) => send({ type: 'reason', k: p.k, id: x.id, reason })}
+        <AttendanceTable all={all} absent={off} why={x => roll[x.id]} edit={edit ? (x, reason) => send({ type: 'reason', k: p.k, id: x.id, reason }) : undefined}
           note="they can’t take part after it unless made eligible" act={x => p.excused?.includes(x.id) ? <span className="pill ok">Eligible</span>
-            : <More className="icon sm ghost" label={`More for ${x.name}`} items={[[<><Icon n="check" />Make eligible</>, () => send({ type: 'excuse', k: p.k, id: x.id })]]} />} />
+            : edit && <More className="icon sm ghost" label={`More for ${x.name}`} items={[[<><Icon n="check" />Make eligible</>, () => send({ type: 'excuse', k: p.k, id: x.id })]]} />} />
       </Sheet>
     </div>
   );
@@ -237,7 +273,7 @@ function Turnout({ d, p, s, send, attend, people, wait }: { d: Drive; p: Phase; 
 // An attendance sheet: everyone who was on the roll, present first, then absent with their reason (editable) and act,
 // what can be done about each absent one
 function AttendanceTable({ all, absent, why, edit, act, note }: {
-  all: Pupil[]; absent: Pupil[]; why: (x: Pupil) => string; edit: (x: Pupil, reason: string) => void; act?: (x: Pupil) => React.ReactNode; note?: string;
+  all: Pupil[]; absent: Pupil[]; why: (x: Pupil) => string; edit?: (x: Pupil, reason: string) => void; act?: (x: Pupil) => React.ReactNode; note?: string;
 }) {
   return (
     <div className="panel att"><div className="scroll"><table>
@@ -246,7 +282,7 @@ function AttendanceTable({ all, absent, why, edit, act, note }: {
         <tr className="sect ok"><td colSpan={6}>Present · {all.length - absent.length}</td></tr>
         {all.filter(x => !absent.includes(x)).map(x => <Who key={x.id} x={x} i={all.indexOf(x)} />)}
         <tr className="sect"><td colSpan={6}>Absent · {absent.length}{absent.length > 0 && note && <span> · {note}</span>}</td></tr>
-        {absent.map(x => <Who key={x.id} x={x} i={all.indexOf(x)} why={why(x) ?? ''} edit={reason => edit(x, reason)}>{act?.(x)}</Who>)}
+        {absent.map(x => <Who key={x.id} x={x} i={all.indexOf(x)} why={why(x) ?? ''} edit={edit && (reason => edit(x, reason))}>{act?.(x)}</Who>)}
       </tbody>
     </table></div></div>
   );
@@ -289,7 +325,7 @@ const Who = ({ x, i, why, edit, children }: { x: Pupil; i: number; why?: string;
 
 // The interviews' side of their card: their rounds and cabins, each edited in a small window any time before the end;
 // on the day, the board (opening it starts them); while live, their numbers and ending them, which finishes the drive.
-function Interviews({ d, p, s, open, send, wait }: { d: Drive; p: Phase; s: PhaseState; open: () => void; send: Send; wait: boolean }) {
+function Interviews({ d, p, s, open, send, edit, wait }: { d: Drive; p: Phase; s: PhaseState; open: () => void; send: Send; edit: boolean; wait: boolean }) {
   const [box, openBox] = useSheet(), [sheet, showSheet] = useSheet();
   const [what, setWhat] = useState<'Rounds' | 'Cabins'>('Rounds');
   const show = (w: typeof what) => { setWhat(w); openBox() };
@@ -310,7 +346,7 @@ function Interviews({ d, p, s, open, send, wait }: { d: Drive; p: Phase; s: Phas
       <Mini items={[['Eligible', d.students.length], ['Present', d.students.length - gone.length, 'ok'], ['Absent', gone.length, 'abs']]} />
       <div className="ph-acts"><button onClick={showSheet}><Icon n="eye" />View attendance</button></div>
       <Sheet sheet={sheet} title="Interviews attendance" count={d.students.length}>
-        <AttendanceTable all={d.students} absent={gone} why={x => (x as Drive['students'][number]).reason ?? ''} edit={(x, reason) => send({ type: 'reason', id: x.id, reason })} />
+        <AttendanceTable all={d.students} absent={gone} why={x => (x as Drive['students'][number]).reason ?? ''} edit={edit ? (x, reason) => send({ type: 'reason', id: x.id, reason }) : undefined} />
       </Sheet>
     </div>
   );
@@ -322,17 +358,21 @@ function Interviews({ d, p, s, open, send, wait }: { d: Drive; p: Phase; s: Phas
           ['Selected', <>{n(x => x.status === 'selected')}{blr > 0 && <small>{blr} BLR</small>}</>, 'ok'], ['Rejected', n(x => x.status === 'rejected'), 'no'], ['Absent', n(x => x.status === 'absent'), 'abs']]} />
       </>}
       <div className="ph-xh">Rounds and cabins</div>
-      <div className="ivset">
+      {!edit ? <div className="ivset">
+        <div><span><b>Rounds</b><small>{d.rounds.join(' · ')}</small></span></div>
+        <div><span><b>Cabins</b><small>{!ready ? 'None yet' : running ? `${free} free right now` : `${d.rooms.length} cabins`}</small></span></div>
+      </div> : <div className="ivset">
         <div><span><b>Rounds</b><small>{d.rounds.join(' · ')}</small></span>
           <Stepper label="Rounds" value={d.rounds.length} min={1} max={10} less={() => send({ type: 'delRound' })} more={() => send({ type: 'addRound' })} />
           <button className="sm" onClick={() => show('Rounds')} title="Name the rounds">Edit</button></div>
         <div><span><b>Cabins</b><small>{!ready ? 'None yet' : running ? `${free} free right now` : `${named} of ${d.rooms.length} with an interviewer`}</small></span>
           <Stepper label="Cabins" value={d.rooms.length} min={0} max={60} less={() => send({ type: 'delRoom', room: d.rooms[d.rooms.length - 1].id })} more={() => send({ type: 'addRoom' })} />
           <button className="sm" disabled={!ready} onClick={() => show('Cabins')} title="Name the interviewers and pick their rounds">Edit</button></div>
-      </div>
-      {!d.attendance && <p className="meta">{opened ? `${d.students.length - off} present · ${off} absent so far. ` : d.pool ? `${eligible(d, 'int').length} eligible students. ` : ''}{wait && planned ? 'Attendance opens once the earlier phases end.'
+      </div>}
+      {!edit && <p className="meta">Only the interviews&rsquo; volunteers run them. Volunteer above to help.</p>}
+      {edit && !d.attendance && <p className="meta">{opened ? `${d.students.length - off} present · ${off} absent so far. ` : d.pool ? `${eligible(d, 'int').length} eligible students. ` : ''}{wait && planned ? 'Attendance opens once the earlier phases end.'
         : opened ? 'Confirm the attendance to open the board.' : 'Take attendance whenever the students are in.'}</p>}
-      <div className="ph-acts">
+      {edit && <div className="ph-acts">
         {!d.attendance
           ? <>
             <button disabled title="Confirm the attendance first">Open board<Icon n="right" /></button>
@@ -342,7 +382,7 @@ function Interviews({ d, p, s, open, send, wait }: { d: Drive; p: Phase; s: Phas
             <button className="danger soft" disabled={!called(d)} title={!called(d) ? 'The interviews start with the first student called' : undefined} onClick={end}><Icon n="flag" />End interviews</button>
             <button className="primary" onClick={go}>Open board<Icon n="right" /></button>
           </>}
-      </div>
+      </div>}
       <Sheet sheet={box} className="small" title={what} count={what === 'Rounds' ? d.rounds.length : d.rooms.length}>
         <div className="sheet-b">
           {what === 'Rounds' ? <RoundsEdit d={d} send={send} /> : <CabinsEdit d={d} send={send} />}

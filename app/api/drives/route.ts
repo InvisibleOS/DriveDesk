@@ -1,10 +1,12 @@
-import { create, guard, list } from '@/lib/store';
+import { asksFor, create, guard, list, me, ready } from '@/lib/store';
 
-// GET → every drive's summary (dashboard + calendar). POST → start a new drive from the onboarding answers.
+// GET → every drive's summary (dashboard + calendar), who is signed in and their volunteer requests.
+// POST → a senior creates a new drive.
 export async function GET(req: Request) {
   const no = guard(req);
   if (no) return no;
-  return Response.json({ drives: list() });
+  await ready();
+  return Response.json({ drives: list(), me: me(), asks: asksFor() });
 }
 
 export async function POST(req: Request) {
