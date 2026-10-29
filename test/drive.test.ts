@@ -1,7 +1,7 @@
 // npm test — onboarding, CSV import, the call → finish → result flow, ending a drive, and old saves upgrading
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { absentAt, alsoIn, apply, missed, forecast, fits, migrate, upNext, newDrive, parseStudents, planDrive, roundOpen, statusLabel, summary, toTable, lead, refuse, runs, phaseStates, eligible, waiting, type Action, type DriveConfig } from '../lib/drive.ts';
+import { absentAt, alsoIn, apply, missed, forecast, fits, migrate, upNext, newDrive, parseStudents, planDrive, roundOpen, statusLabel, summary, toTable, lead, refuse, runs, phaseStates, eligible, waiting, placedAll, titleOf, phasesOf, type Action, type DriveConfig } from '../lib/drive.ts';
 
 const cfg = (over: Partial<DriveConfig> = {}): DriveConfig => ({
   company: 'Optum', date: '2026-10-23', location: 'J Block Interview Cabins', rounds: ['Tech', 'HR', 'Final'],
@@ -102,23 +102,23 @@ test('a configured drive keeps its phases in order and is set up for interviews 
   assert.deepEqual([runs(d, riddhi), runs(d, tanvi), runs(d, { ...tanvi, role: 'senior' })], [{ ppt: true, int: false }, { ppt: false, int: false }, { ppt: true, int: true }]);
   assert.equal(refuse(d, riddhi, { type: 'phaseRoll', k: 'ppt' }), '', 'her own phase');
   assert.match(refuse(d, riddhi, { type: 'attendance' }), /interviews' volunteers/, 'not the interviews');
-  assert.match(refuse(d, tanvi, { type: 'phaseRoll', k: 'ppt' }), /pre-placement talk's volunteers/, 'not a phase she does not volunteer at');
+  assert.match(refuse(d, tanvi, { type: 'phaseRoll', k: 'ppt' }), /PPT's volunteers/, 'not a phase she does not volunteer at');
   assert.equal(refuse(d, riddhi, moved('ppt', { venue: 'AB5 Auditorium' })), '', 'moves her own phase');
   assert.match(refuse(d, riddhi, moved('int', { at: '2026-11-04T10:00' })), /interviews' volunteers/);
   assert.match(refuse(d, riddhi, moved('ppt', { crew: ['riddhi', 'tanvi'] })), /who volunteers/);
   assert.match(refuse(d, riddhi, { type: 'plan', plan: { kind: 'P', phases: [ph[1]] } }), /add or remove phases/);
   assert.equal(refuse(d, { ...tanvi, role: 'senior' }, { type: 'attendance' }), '', 'seniors run every phase');
   assert.throws(() => planDrive({ company: 'Optum', plan: { ...plan, kind: 'X' as never } }, 'p'), /type/);
-  assert.throws(() => planDrive({ company: 'Optum', plan: { ...plan, phases: [{ k: 'oa', venue: '', at: '', crew: [] }] } }, 'p'), /online assessment/);
-  assert.throws(() => planDrive({ company: 'Optum', plan: { ...plan, phases: [plan.phases[0], { ...plan.phases[1], at: '2026-11-03T10:00' }] } }, 'p'), /interviews has to be after the pre-placement talk/, 'same time is not after');
-  assert.throws(() => apply(planDrive({ company: 'Optum', plan }, 'q'), { type: 'plan', plan: { ...plan, phases: [plan.phases[1], { k: 'oa', venue: '', at: '2026-10-31T10:00', crew: [] }, plan.phases[0]] } }), /online assessment has to be after/);
+  assert.throws(() => planDrive({ company: 'Optum', plan: { ...plan, phases: [{ k: 'oa', venue: '', at: '', crew: [] }] } }, 'p'), /date and time of the OA/);
+  assert.throws(() => planDrive({ company: 'Optum', plan: { ...plan, phases: [plan.phases[0], { ...plan.phases[1], at: '2026-11-03T10:00' }] } }, 'p'), /interviews has to be after the PPT/, 'same time is not after');
+  assert.throws(() => apply(planDrive({ company: 'Optum', plan }, 'q'), { type: 'plan', plan: { ...plan, phases: [plan.phases[1], { k: 'oa', venue: '', at: '2026-10-31T10:00', crew: [] }, plan.phases[0]] } }), /OA has to be after the PPT/);
   apply(d, { type: 'plan', plan: { ...plan, phases: [{ k: 'oa', venue: 'Virtual', at: '2026-11-02', crew: [] }, ...d.phases!] } });
   assert.deepEqual(d.phases!.map(p => p.k), ['ppt', 'oa', 'int'], 'a phase added later goes in its place');
   apply(d, { type: 'plan', plan: { kind: 'I', phases: d.phases! } });
   assert.equal(d.kind, 'P', 'the type of offer is fixed once the drive is created');
   apply(d, { type: 'setup', config: cfg({ company: 'Renamed', date: '2026-11-03' }) }, 2000);
   assert.deepEqual([d.status, d.phases!.length, d.kind, d.company], ['live', 3, 'P', 'Optum'], 'setting up the interviews keeps the plan');
-  assert.throws(() => apply(d, { type: 'plan', plan: { ...plan, phases: d.phases!.filter(p => p.k !== 'oa') } }), /online assessment has begun, so it stays/, 'the interviews began, so the phases before them are over');
+  assert.throws(() => apply(d, { type: 'plan', plan: { ...plan, phases: d.phases!.filter(p => p.k !== 'oa') } }), /OA has begun, so it stays/, 'the interviews began, so the phases before them are over');
   const e = planDrive({ company: 'Optum', plan }, 'e');
   apply(e, { type: 'plan', plan: { ...plan, phases: [plan.phases[0]] } }, 0);
   assert.deepEqual(e.phases!.map(p => p.k), ['int'], 'a phase that has not begun can be removed');
@@ -254,7 +254,7 @@ test('upgrades older saves', () => {
   const d = migrate(structuredClone(v1));
   assert.deepEqual(d.students.map(s => [s.status, s.done, s.hist[0].res, s.campus]), [['waiting', 1, 'done', ''], ['pending', 2, 'done', '']]);
   assert.deepEqual(d.rooms[0].rounds, [1]);
-  assert.deepEqual([d.date, d.status, d.v, d.location, d.attendance], ['2026-10-23', 'live', 9, '', d.startedAt]);
+  assert.deepEqual([d.date, d.status, d.v, d.location, d.attendance], ['2026-10-23', 'live', 10, '', d.startedAt]);
   const v2 = { company: 'K', rounds: ['R1'], rooms: [], log: [], seq: 1, students: [
     { id: '1', name: 'Out', done: 1, status: 'waiting', hist: [{ r: 0, res: 'done' }] },
     { id: '2', name: 'New', done: 0, status: 'waiting', hist: [] },
@@ -331,4 +331,53 @@ test('interviews-only: attendance before their time, live with the first call, a
   apply(d, { type: 'move', id: d.students[1].id, to: 'absent' }, at('2026-11-04T09:10'));
   assert.equal(absentAt(d, d.students[1]), 'Round 1', 'missed when due for a round');
   assert.equal(d.startedAt, at('2026-11-04T09:00'));
+});
+
+test('placed: the list from before DriveDesk first, then each drive\'s selections, earliest offer counts', () => {
+  const at = (date: string, company: string, reg: string, status: 'selected' | 'rejected') => {
+    const d = newDrive(cfg({ company, date, students: [{ reg, name: `S${reg}`, campus: 'BLR' }] }), company);
+    d.students[0].status = status;
+    return d;
+  };
+  const sheet = [{ reg: '230905001', name: 'Asha', campus: 'BLR' as const, company: 'Infosys', date: '' }];
+  const p = placedAll(sheet, [at('2026-11-02', 'Later', '230905002', 'selected'), at('2026-10-20', 'Earlier', '230905002', 'selected'),
+    at('2026-10-21', 'Optum', '230905001', 'selected'), at('2026-10-22', 'Kotak', '230905003', 'rejected')]);
+  assert.deepEqual(p.map(x => [x.reg, x.company]), [['230905001', 'Infosys'], ['230905002', 'Earlier']]);
+  assert.equal(p[1].drive, 'Earlier');
+});
+
+test('several OAs, names, shortlists, and phases side by side', () => {
+  const at = (s: string) => Date.parse(s), ph = (k: 'ppt' | 'oa' | 'int', t: string, x = {}) => ({ id: '', k, venue: '', at: t, crew: [], ...x });
+  const students = ['230905001', '230905002', '230905003', '230905004'].map((reg, i) => ({ reg, name: `S${i}`, campus: 'BLR' as const }));
+  const d = planDrive({ company: 'Opus', plan: { kind: 'P', students, phases: [ph('ppt', '2026-11-01T10:00'), ph('oa', '2026-11-02T10:00'),
+    ph('oa', '2026-11-02T10:00', { name: 'Coding round' }), ph('int', '2026-11-02T09:00')] } }, 'opus');
+  assert.deepEqual(phasesOf(d).map(p => [p.id, titleOf(d, p)]), [['ppt', 'Pre-placement talk'], ['oa', 'Online assessment 1'], ['oa2', 'Coding round'], ['int', 'Interviews']],
+    'ids for each OA; the OAs and interviews may share or swap times, only the talk comes first');
+  assert.throws(() => planDrive({ company: 'X', plan: { kind: 'P', students, phases: [ph('ppt', '2026-11-03T10:00'), ph('oa', '2026-11-02T10:00')] } }, 'x'), /OA has to be after the PPT/);
+  const [a, b, c, e] = d.pool!;
+  apply(d, { type: 'phaseRoll', k: 'ppt' }, at('2026-11-01T10:05'));
+  apply(d, { type: 'phaseRoll', k: 'ppt', id: e.id, absent: true }, at('2026-11-01T10:06'));
+  apply(d, { type: 'endPhase', k: 'ppt' }, at('2026-11-01T11:00'));
+  assert.equal(apply(d, { type: 'shortlist', k: 'oa', regs: ['230905001', '230905004', '999999999'] }), '2 students shortlisted for the OA 1');
+  assert.deepEqual(eligible(d, 'oa').map(s => s.name), ['S0'], 'only the shortlisted, and never anyone absent at the PPT');
+  assert.deepEqual(eligible(d, 'oa2').map(s => s.name), ['S0'], 'one after another: the next OA takes those on the earlier shortlist');
+  apply(d, { type: 'plan', plan: { kind: 'P', together: true, phases: phasesOf(d) } }, at('2026-11-01T12:00'));
+  apply(d, { type: 'shortlist', k: 'oa2', regs: ['230905002'] });
+  apply(d, { type: 'shortlist', k: 'int', regs: ['230905003'] });
+  assert.deepEqual(['oa', 'oa2', 'int'].map(k => eligible(d, k).map(s => s.name)), [['S0'], ['S1'], ['S2']], 'side by side: each its own shortlist');
+  apply(d, { type: 'phaseRoll', k: 'oa' }, at('2026-11-02T10:01'));
+  apply(d, { type: 'phaseRoll', k: 'oa2' }, at('2026-11-02T10:01'));
+  assert.deepEqual(phaseStates(d, at('2026-11-02T10:30')), ['Done', 'Live', 'Live', 'Today'], 'both OAs live at once');
+  assert.throws(() => apply(d, { type: 'shortlist', k: 'oa', regs: ['230905002'] }), /has begun/, 'fixed once its attendance starts');
+  apply(d, { type: 'setup', config: cfg({ company: 'Opus', date: '2026-11-02' }) });
+  assert.deepEqual(d.students.map(s => s.name), ['S2'], 'the interviews take their own shortlist, whatever the OAs did');
+  void [a, b, c];
+});
+
+test('seniors edit a drive\'s name and type of offer', () => {
+  const d = newDrive(cfg(), 'x');
+  apply(d, { type: 'details', company: ' Optum Global ', kind: 'I' });
+  assert.deepEqual([d.company, d.kind], ['Optum Global', 'I']);
+  assert.throws(() => apply(d, { type: 'details', company: ' ', kind: 'I' }), /company name/);
+  assert.match(refuse(d, { user: 'riddhi', name: 'Riddhi', role: 'junior' }, { type: 'details', company: 'X', kind: 'P' }), /senior members/);
 });

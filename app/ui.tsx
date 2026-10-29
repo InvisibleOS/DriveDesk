@@ -2,7 +2,7 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { lead, PHASES, statusLabel, type Action, type Also, type Ask, type Drive, type Member, type PhaseKey, type Summary } from '@/lib/drive';
+import { lead, statusLabel, type Action, type Also, type Ask, type Drive, type Member, type PhaseId, type Placed, type Summary } from '@/lib/drive';
 
 let skew = 0; // server clock − this device's clock, so the display clock matches the desk
 export const now = () => Date.now() + skew;
@@ -70,7 +70,7 @@ export async function post<T = { msg?: string }>(path: string, body?: unknown, m
 // held: the other laptop running this drive; also: student id → where else they are present right now;
 // me: who is signed in; can: the phases they run (a junior, those they volunteer at); asks: its volunteer requests
 export type Seen = Record<string, Also[]>;
-export type Live = { drive: Drive; undo: string | null; held: string | null; also: Seen; me: Member | null; can: Partial<Record<PhaseKey, boolean>>; asks: Ask[] };
+export type Live = { drive: Drive; undo: string | null; held: string | null; also: Seen; me: Member | null; can: Partial<Record<PhaseId, boolean>>; asks: Ask[] };
 export type Send = (a: Action | { type: 'undo' } | { type: 'takeOver' }) => Promise<void>;
 type Gate = 'pin' | 'signin';
 const gateOf = (r: Response) => r.json().then(j => (j.gate === 'signin' ? 'signin' : 'pin') as Gate, () => 'pin' as Gate);
@@ -140,6 +140,19 @@ export function usePeople() {
     return () => { heard.delete(setP) };
   }, []);
   return p;
+}
+// every placed student (the list from before DriveDesk, then each drive's selections); null while it loads
+export function usePlaced() {
+  const [list, setList] = useState<Placed[] | null>(null);
+  useEffect(() => {
+    fetch(withPin('/api/placed')).then(async r => {
+      if (r.status === 401) return void (location.href = '/'); // signed out: the dashboard shows the sign-in
+      const j = await r.json();
+      if (!r.ok) throw Error(j.error);
+      setList(j.placed);
+    }).catch(e => { setList([]); toast(e.message === 'Failed to fetch' ? 'Server not reachable' : `Couldn’t load the placed students: ${e.message}`, true) });
+  }, []);
+  return list;
 }
 export const nameOf = (p: People | null, user: string) => p?.members.find(m => m.user === user)?.name ?? user;
 
@@ -385,7 +398,7 @@ function Pop({ label, icon, tone = '', count, children }: { label: string; icon:
 
 // For seniors, in every top bar while anyone is waiting: members asking to volunteer, each with Decline and Approve.
 // Approving puts them on that phase's volunteers, which also lets them run the drive.
-type OpenAsk = Ask & { name: string; company: string; when: string };
+type OpenAsk = Ask & { name: string; company: string; phase: string; when: string };
 function Requests() {
   const p = usePeople(), mine = lead(p?.me);
   const [open, setOpen] = useState<OpenAsk[]>([]);
@@ -410,7 +423,7 @@ function Requests() {
         <ul>{open.map(a => (
           <li key={a.drive + a.k + a.user} className="vreq">
             <div><Av n={a.name} /><b>{a.name}</b></div>
-            <span>{a.company} · {PHASES[a.k]} · {when(a.when)}</span>
+            <span>{a.company} · {a.phase} · {when(a.when)}</span>
             <div className="row"><div className="sp" /><button className="sm" onClick={() => decide(a, 'deny')}>Decline</button><button className="sm primary" onClick={() => decide(a, 'approve')}><Icon n="check" s={13} />Approve</button></div>
           </li>
         ))}</ul>
@@ -443,6 +456,8 @@ export function Warnings({ d, also }: { d: Drive; also: Seen }) {
 
 // Lucide icon outlines (lucide.dev, ISC licence)
 const ICONS = {
+  chevron: 'm6 9 6 6 6-6',
+  award: 'M12 2a6 6 0 1 0 0 12 6 6 0 1 0 0-12ZM15.48 12.89l1.51 8.53a.5.5 0 0 1-.81.47l-3.58-2.69a1 1 0 0 0-1.2 0l-3.59 2.69a.5.5 0 0 1-.81-.47l1.51-8.53',
   undo: 'M9 14 4 9l5-5M4 9h10.5a5.5 5.5 0 0 1 0 11H11',
   check: 'M20 6 9 17l-5-5',
   x: 'M18 6 6 18M6 6l12 12',

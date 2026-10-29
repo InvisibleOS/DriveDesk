@@ -54,6 +54,7 @@ Everyone signs in with their own account, which the admin makes on **⋯ › Acc
 | Screen | What it's for |
 |---|---|
 | Dashboard | This month's numbers and a calendar. The panel beside it lists the chosen day's drives (today by default, plus any still open from earlier days), each with its next step: take attendance, open the board, continue setting up. A junior's own phases are marked **You volunteer** or **Requested** |
+| Placed students | From the dashboard's top bar: everyone placed so far and where, the committee's list from before DriveDesk plus everyone selected in a drive since. Read-only, searchable, filtered by company and campus. A new drive's student list leaves them out |
 | New drive | Four steps: company, date and location → how many rounds → which cabins take which rounds → upload students. If the date is a later day, it stops after the first step and just creates the drive |
 | Drive board | The board for one drive. The top bar has undo, **End drive** and **⋯** (Settings, Logs, theme, About & updates, Sign out). The numbers row (Present, In cabins, Awaiting, Selected, Rejected, Absent) opens a list of those students. **End drive** moves it to the calendar history as completed |
 | Cabin page | One cabin on a volunteer's phone (website mode, below) |

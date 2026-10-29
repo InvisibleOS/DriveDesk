@@ -3,7 +3,7 @@
 // decide what each role may do. What to upload and when lives in lib/store.ts. Plain fetch, no client library.
 import fs from 'node:fs';
 import path from 'node:path';
-import type { Ask, Drive, Member, PhaseKey, Role } from './drive';
+import type { Ask, Campus, Drive, Member, PhaseId, Placed, Role } from './drive';
 
 const BASE = 'https://egmazhtnqzaxwyazbmrg.supabase.co';
 const KEY = 'sb_publishable_aniYjwCwpO9Rqf1-Glaspg_rwmtt4Vk'; // public by design: the table's rules allow nothing without a member's sign-in
@@ -99,22 +99,26 @@ export async function upload(d: Drive): Promise<string> {
 export const erase = (id: string) => rest(`?id=eq.${encodeURIComponent(id)}`, { method: 'DELETE' });
 
 // --- volunteering: a member asks for a phase of a drive, a senior approves (they join its volunteers) or denies ---
-type AskRow = { drive_id: string; phase: PhaseKey; user_id: string; username: string; status: Ask['status']; asked_at: string };
+type AskRow = { drive_id: string; phase: PhaseId; user_id: string; username: string; status: Ask['status']; asked_at: string };
 export const asks = async (): Promise<Ask[]> => (await api('volunteer_requests?select=drive_id,phase,user_id,username,status,asked_at') as AskRow[])
   .map(r => ({ drive: r.drive_id, k: r.phase, id: r.user_id, user: r.username, status: r.status, at: Date.parse(r.asked_at) }));
 // asking again after being taken off a phase reuses the old request
-export const ask = (drive: string, k: PhaseKey) => api('volunteer_requests?on_conflict=drive_id,phase,user_id', {
+export const ask = (drive: string, k: PhaseId) => api('volunteer_requests?on_conflict=drive_id,phase,user_id', {
   method: 'POST', headers: { Prefer: 'resolution=merge-duplicates' },
   body: JSON.stringify([{ drive_id: drive, phase: k, user_id: session?.id, status: 'pending', asked_at: new Date().toISOString() }]),
 });
-export const withdraw = (drive: string, k: PhaseKey) =>
+export const withdraw = (drive: string, k: PhaseId) =>
   api(`volunteer_requests?drive_id=eq.${encodeURIComponent(drive)}&phase=eq.${k}&user_id=eq.${session?.id}`, { method: 'DELETE' });
-export const decide = (drive: string, k: PhaseKey, id: string, status: 'approved' | 'denied') =>
+export const decide = (drive: string, k: PhaseId, id: string, status: 'approved' | 'denied') =>
   api(`volunteer_requests?drive_id=eq.${encodeURIComponent(drive)}&phase=eq.${k}&user_id=eq.${id}`, { method: 'PATCH', body: JSON.stringify({ status, decided_by: who() }) });
 
 // --- accounts (the admin's Accounts page; the database refuses anyone else) ---
 type MemberRow = { id: string; username: string; name: string; role: Role; created_at: string; last_sign_in_at: string | null };
 const rpc = (fn: string, args: object = {}) => api(`rpc/${fn}`, { method: 'POST', body: JSON.stringify(args) });
+// the committee's list of students placed before DriveDesk (loaded into the shared copy; nobody edits it in the app)
+type PlacedRow = { reg: string; name: string; campus: Campus; company: string; placed_on: string | null };
+export const placed = async (): Promise<Placed[]> => (await api('placed?select=reg,name,campus,company,placed_on') as PlacedRow[])
+  .map(p => ({ reg: p.reg, name: p.name, campus: p.campus, company: p.company, date: p.placed_on ?? '' }));
 export const members = async (): Promise<Member[]> => (await rpc('desk_members') as MemberRow[])
   .map(m => ({ id: m.id, user: m.username, name: m.name, role: m.role, since: Date.parse(m.created_at), seen: m.last_sign_in_at ? Date.parse(m.last_sign_in_at) : null }));
 export const addMember = (user: string, name: string, role: Role, password: string) =>

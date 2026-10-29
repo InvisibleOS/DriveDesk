@@ -7,10 +7,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import * as cloud from './cloud';
-import { alsoIn, apply, lead, migrate, newDrive, phasesOf, phaseStates, planDrive, PHASES, QUIET, refuse, runs, summary, type Action, type Ask, type Drive, type DriveConfig, type Member, type PhaseKey, type Plan, type Role } from './drive';
+import { alsoIn, apply, lead, migrate, newDrive, phasesOf, phaseStates, placedAll, planDrive, QUIET, shortOf, titleOf, refuse, runs, summary, type Action, type Ask, type Drive, type DriveConfig, type Member, type PhaseId, type Placed, type Plan, type Role } from './drive';
 
 const DATA = process.env.DATA_DIR || path.join(process.cwd(), 'data');
-const DIR = path.join(DATA, 'drives'), TRASH = path.join(DATA, 'trash'), STATE = path.join(DATA, 'sync.json'), PEOPLE = path.join(DATA, 'members.json');
+const DIR = path.join(DATA, 'drives'), TRASH = path.join(DATA, 'trash'), STATE = path.join(DATA, 'sync.json'), PEOPLE = path.join(DATA, 'members.json'), SHEET = path.join(DATA, 'placed.json');
 // rev counts changes made here, pushed is the rev last uploaded: they differ while a change waits to go up
 type Live = { d: Drive; undo: { snap: string; label: string }[]; subs: Set<(payload: string) => void>; rev: number; pushed: number };
 // remote: each drive's updated_at as last seen in the shared copy; at: its file's time when last uploaded or downloaded
@@ -46,6 +46,7 @@ function drives() {
   cloud.init(DATA);
   try { g.__sync = JSON.parse(fs.readFileSync(STATE, 'utf8')) } catch { g.__sync = { device: crypto.randomUUID(), remote: {}, at: {}, gone: [] } }
   try { members = JSON.parse(fs.readFileSync(PEOPLE, 'utf8')) } catch { members = [] } // volunteers' names, offline too
+  try { sheet = JSON.parse(fs.readFileSync(SHEET, 'utf8')) } catch { sheet = [] }
   const m = new Map<string, Live>();
   for (const f of fs.readdirSync(DIR)) if (f.endsWith('.json')) {
     const d = migrate(JSON.parse(fs.readFileSync(path.join(DIR, f), 'utf8')));
@@ -89,17 +90,20 @@ export const get = (id: string) => drives().get(id);
 // --- who is signed in, and what they may do ---
 // members: everyone with an account (names for volunteers); asks: volunteer requests, a junior's own or, for seniors, all
 let members: Member[] = [], asks: Ask[] = [];
+let sheet: Placed[] = []; // students placed before DriveDesk, kept here for offline use too
 export const me = () => { drives(); return cloud.me() };
 // a sign-in saved before roles is refreshed on the first request, so the page shows the right buttons from the start
 export async function ready() { drives(); try { await cloud.token() } catch { /* offline: as saved */ } }
 // fresh: straight from the shared copy (the Accounts page); otherwise as last synced
 export async function people(fresh = false) { await ready(); if (fresh) await refresh(true); return { me: cloud.me(), members } }
+// every placed student: the list from before DriveDesk, then everyone selected in a drive
+export async function placed() { await ready(); return placedAll(sheet, [...drives().values()].map(l => l.d)) }
 const nameOf = (user: string) => members.find(m => m.user === user)?.name ?? user;
 // the requests still waiting for a senior, with what they are for: newest first
 export function openAsks() {
   return asks.flatMap(a => {
-    const d = get(a.drive)?.d, p = d && phasesOf(d).find(x => x.k === a.k);
-    return a.status === 'pending' && d && p && !p.crew.includes(a.user) ? [{ ...a, name: nameOf(a.user), company: d.company, when: p.at }] : [];
+    const d = get(a.drive)?.d, p = d && phasesOf(d).find(x => x.id === a.k);
+    return a.status === 'pending' && d && p && !p.crew.includes(a.user) ? [{ ...a, name: nameOf(a.user), company: d.company, phase: titleOf(d, p), when: p.at }] : [];
   }).sort((a, b) => b.at - a.at);
 }
 export const asksFor = (id?: string) => asks.filter(a => !id || a.drive === id);
@@ -186,11 +190,11 @@ export function signOut() { cloud.signOut(); asks = [] }
 // --- volunteering ---
 // A member asks to volunteer at a phase that hasn't begun; a senior approves (they join its volunteers, which also lets
 // them run the drive) or declines. Needs the internet: requests live only in the shared copy.
-export async function volunteer(id: string, k: PhaseKey, what: 'ask' | 'withdraw' | 'approve' | 'deny', user?: string) {
+export async function volunteer(id: string, k: PhaseId, what: 'ask' | 'withdraw' | 'approve' | 'deny', user?: string) {
   const l = get(id), m = me();
   if (!l) throw Error('Drive not found');
   if (!m) throw Error('Signed out');
-  const ph = phasesOf(l.d), i = ph.findIndex(p => p.k === k), label = PHASES[k].toLowerCase();
+  const ph = phasesOf(l.d), i = ph.findIndex(p => p.id === k), label = i < 0 ? '' : shortOf(l.d, ph[i]);
   if (i < 0) throw Error('Phase not found');
   let msg: string;
   if (what === 'ask') {
@@ -206,7 +210,7 @@ export async function volunteer(id: string, k: PhaseKey, what: 'ask' | 'withdraw
     const a = asks.find(x => x.drive === id && x.k === k && x.user === user);
     if (!a) throw Error('That request is no longer there');
     if (what === 'approve') { // on the volunteers first: that is what lets them run it, even if marking the request fails
-      dispatch(id, { type: 'plan', plan: { kind: l.d.kind ?? 'P', phases: ph.map(p => p.k === k ? { ...p, crew: [...new Set([...p.crew, a.user])] } : p) } });
+      dispatch(id, { type: 'plan', plan: { kind: l.d.kind ?? 'P', together: !!l.d.together, phases: ph.map(p => p.id === k ? { ...p, crew: [...new Set([...p.crew, a.user])] } : p) } });
       await cloud.decide(id, k, a.id, 'approved').catch(() => {});
       msg = `${nameOf(a.user)} is volunteering at the ${label}`;
     } else {
@@ -240,6 +244,8 @@ async function refresh(all = round % 12 === 0) {
   if (all || !members.length) {
     members = await cloud.members();
     fs.writeFileSync(PEOPLE, JSON.stringify(members.map(({ user, name, role }) => ({ user, name, role }))));
+    sheet = await cloud.placed().catch(() => sheet); // a laptop on an older shared copy, without the list, keeps what it has
+    fs.writeFileSync(SHEET, JSON.stringify(sheet));
   }
   if (JSON.stringify(asks) !== before) tellAll();
 }

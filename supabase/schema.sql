@@ -59,7 +59,7 @@ create policy "seniors delete drives" on public.drives for delete to authenticat
 -- and marks the request; seniors see every request, juniors their own.
 create table if not exists public.volunteer_requests (
   drive_id text not null references public.drives on delete cascade,
-  phase text not null check (phase in ('ppt', 'oa', 'int')),
+  phase text not null, -- the phase's id in the drive: 'ppt', 'oa', 'oa2'…, 'int'
   user_id uuid not null default auth.uid() references auth.users on delete cascade,
   username text not null default public.desk_user(),
   status text not null default 'pending' check (status in ('pending', 'approved', 'denied')),
@@ -67,6 +67,8 @@ create table if not exists public.volunteer_requests (
   decided_by text,
   primary key (drive_id, phase, user_id)
 );
+alter table public.volunteer_requests drop constraint if exists volunteer_requests_phase_check; -- once ppt / oa / int only
+alter table public.volunteer_requests add constraint volunteer_requests_phase_check check (phase ~ '^(ppt|oa[0-9]*|int)$');
 alter table public.volunteer_requests enable row level security;
 grant select, insert, update, delete on public.volunteer_requests to authenticated;
 drop policy if exists "own or seniors read requests" on public.volunteer_requests;
@@ -84,6 +86,20 @@ create policy "seniors decide requests" on public.volunteer_requests for update 
   using ((select public.desk_role()) in ('admin', 'senior')) with check ((select public.desk_role()) in ('admin', 'senior'));
 create policy "withdraw or clear requests" on public.volunteer_requests for delete to authenticated
   using ((user_id = auth.uid() and status = 'pending') or (select public.desk_role()) in ('admin', 'senior'));
+
+-- Students placed before DriveDesk, from the committee's sheet. Every member reads it; nobody edits it from the app (it is
+-- loaded here, as postgres). Students selected in a drive aren't stored here: the app adds them from the drives.
+create table if not exists public.placed (
+  reg text primary key check (reg ~ '^[0-9]{9}$'),
+  name text not null,
+  campus text not null default '' check (campus in ('BLR', 'MPL', '')),
+  company text not null,
+  placed_on date
+);
+alter table public.placed enable row level security;
+grant select on public.placed to authenticated;
+drop policy if exists "members read placed" on public.placed;
+create policy "members read placed" on public.placed for select to authenticated using ((select public.desk_role()) is not null);
 
 -- Accounts, from the app's Accounts page (admin only). Everyone signed in can list the members, to show volunteers'
 -- names; only the admin sees when each last signed in.

@@ -1,7 +1,7 @@
 'use client';
 import Link from 'next/link';
 import { useState } from 'react';
-import { PHASES, lead, localDate, type Ask, type Member, type Summary } from '@/lib/drive';
+import { lead, localDate, type Ask, type Member, type Summary } from '@/lib/drive';
 import { PICON } from './phases';
 import { DeskMenu, Icon, PageHead, Stat, TopBar, longDate, tm, useDrives } from './ui';
 
@@ -43,6 +43,7 @@ export default function Dashboard() {
   return (
     <div className="app">
       <TopBar>
+        <Link className="btn" href="/placed"><Icon n="award" />Placed students</Link>
         {boss && <Link className="btn primary" href="/create"><Icon n="plus" />New drive</Link>}
         <DeskMenu />
       </TopBar>
@@ -80,7 +81,7 @@ export default function Dashboard() {
                   <button key={day} className={`day${day.slice(0, 7) !== month ? ' out' : ''}${day === today ? ' today' : ''}${day === sel ? ' sel' : ''}`}
                     onClick={() => pick(day)} aria-label={`${longDate(day)}: ${ds.length} phase${ds.length === 1 ? '' : 's'}`} aria-pressed={day === sel}>
                     <span className="dh"><span className="dn">{+day.slice(8)}</span>{ds.length > 2 && <span className="more">+{ds.length - 2} more</span>}</span>
-                    {ds.slice(0, 2).map(e => <span key={e.s.id + e.p.k} className={`chip ${tone(e)}${e.mine === 'on' ? ' mine' : ''}`} title={`${e.s.company} · ${PHASES[e.p.k]}${e.mine === 'on' ? ' · you volunteer' : ''}`}>{e.s.company} · {e.p.k === 'int' ? 'Interviews' : e.p.k.toUpperCase()}</span>)}
+                    {ds.slice(0, 2).map(e => <span key={e.s.id + e.p.id} className={`chip ${tone(e)}${e.mine === 'on' ? ' mine' : ''}`} title={`${e.s.company} · ${e.p.name}${e.mine === 'on' ? ' · you volunteer' : ''}`}>{e.s.company} · {e.p.short[0].toUpperCase() + e.p.short.slice(1)}</span>)}
                   </button>
                 );
               })}
@@ -95,7 +96,7 @@ export default function Dashboard() {
             <div className="scroll">
               {GROUPS.map(([g, l]) => {
                 const es = dayDrives.filter(e => group(e) === g);
-                return es.length > 0 && <div key={g} className="dgroup"><h3 className="sect-t">{l}<span>{es.length}</span></h3>{es.map(e => <DriveCard key={e.s.id + e.p.k} e={e} sel={sel} run={boss || e.mine === 'on'} />)}</div>;
+                return es.length > 0 && <div key={g} className="dgroup"><h3 className="sect-t">{l}<span>{es.length}</span></h3>{es.map(e => <DriveCard key={e.s.id + e.p.id} e={e} sel={sel} run={boss || e.mine === 'on'} />)}</div>;
               })}
               {!dayDrives.length && (
                 <div className="none">
@@ -113,7 +114,7 @@ export default function Dashboard() {
 }
 
 const mineOf = (s: Summary, p: Summary['phases'][number], me: Member | null, asks: Ask[]): Entry['mine'] =>
-  !me ? undefined : p.crew.includes(me.user) ? 'on' : asks.some(a => a.drive === s.id && a.k === p.k && a.user === me.user && a.status === 'pending') ? 'asked' : undefined;
+  !me ? undefined : p.crew.includes(me.user) ? 'on' : asks.some(a => a.drive === s.id && a.k === p.id && a.user === me.user && a.status === 'pending') ? 'asked' : undefined;
 const tone = ({ p }: Entry) => p.state === 'Live' ? 'live' : p.state === 'Done' ? 'done' : 'planned';
 // the day panel, in what-to-do-first order: running now (or left open from an earlier day), still to come, finished
 const GROUPS = [['now', 'Now'], ['next', 'Coming up'], ['done', 'Done']] as const;
@@ -131,7 +132,7 @@ function DriveCard({ e: { s, p, day, mine }, sel, run }: { e: Entry; sel: string
       <span className="dc-ico"><Icon n={PICON[p.k]} s={16} /></span>
       <div className="dc-main">
         <div className="dc-top"><b>{s.company}</b><span className={`pill ${tn}`}>{pill}</span></div>
-        <div className="dc-meta">{[PHASES[p.k], day !== sel && longDate(day), when, p.venue].filter(Boolean).join(' · ')}</div>
+        <div className="dc-meta">{[p.name, day !== sel && longDate(day), when, p.venue].filter(Boolean).join(' · ')}</div>
         {mine && <span className={`tag ${mine}`}>{mine === 'on' ? 'You volunteer' : 'Requested'}</span>}
         {int && s.status === 'live' && s.attendance && <div className="dc-stats"><span><b>{s.inCabin}</b> in cabins</span><span><b>{s.awaiting}</b> awaiting</span><span className="ok"><b>{s.blrSelected}</b> BLR selected</span></div>}
         {int && s.status === 'done' && <div className="dc-stats"><span><b>{s.students}</b> students</span><span className="ok"><b>{s.blrSelected}</b> BLR selected</span><span><b>{s.rejected}</b> rejected</span></div>}

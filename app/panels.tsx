@@ -1,6 +1,6 @@
 'use client';
 import { useId, useState } from 'react';
-import { SHORT, absentAt, missed, venuesOf, doneLabel, eligible, parseStudents, rname, statusLabel, toTable, type Campus, type Drive, type Phase, type Row, type Status } from '@/lib/drive';
+import { shortOf, absentAt, missed, venuesOf, doneLabel, eligible, parseStudents, rname, statusLabel, toTable, type Campus, type Drive, type Phase, type Placed, type Row, type Status } from '@/lib/drive';
 import { Camp } from './board';
 import { AlsoIn, Field, Icon, More, Stat, download, tm, toast, type Seen, type Send } from './ui';
 
@@ -53,14 +53,14 @@ export function Students({ d, status, send, also }: { d: Drive; status: Status |
               </tr>
             ))}
             {/* missed a PPT or OA, so never on the interviews' list: making them eligible adds them there */}
-            {away.map(({ s, k, reason }, i) => (
+            {away.map(({ s, k, p, reason }, i) => (
               <tr key={s.id}>
                 <td className="num">{d.students.length + i + 1}</td>
                 <td className="reg">{s.reg}</td>
                 <td className="name">{s.name}</td>
                 <td><Camp c={s.campus} /></td>
-                <td>{SHORT[k]}</td>
-                <td><div className="why"><Field value={reason} placeholder="Add a reason" maxLength={200} aria-label={`Why ${s.name} missed the ${SHORT[k]}`} onSave={reason => send({ type: 'reason', k, id: s.id, reason })} />
+                <td>{shortOf(d, p)}</td>
+                <td><div className="why"><Field value={reason} placeholder="Add a reason" maxLength={200} aria-label={`Why ${s.name} missed the ${shortOf(d, p)}`} onSave={reason => send({ type: 'reason', k, id: s.id, reason })} />
                   <More className="icon sm ghost" label={`More for ${s.name}`} items={[[<><Icon n="check" />Make eligible</>, () => send({ type: 'excuse', k, id: s.id })]]} />
                 </div></td>
               </tr>
@@ -79,12 +79,18 @@ const saveCSV = (name: string, rows: unknown[][]) => download(name, '\ufeff' + r
 // A talk's or test's attendance sheet: everyone eligible for it, present or absent, and who was let through anyway.
 export function exportAttendance(d: Drive, p: Phase) {
   const roll = p.roll ?? {};
-  saveCSV(`${d.company}-${SHORT[p.k]}-attendance.csv`, [['Registration number', 'Name', 'Campus', 'Attendance', 'Reason for absence', 'Made eligible'],
-    ...eligible(d, p.k).map(s => [s.reg, s.name, s.campus, s.id in roll ? 'Absent' : 'Present', roll[s.id] ?? '', p.excused?.includes(s.id) ? 'Yes' : ''])]);
+  saveCSV(`${d.company}-${shortOf(d, p)}-attendance.csv`, [['Registration number', 'Name', 'Campus', 'Attendance', 'Reason for absence', 'Made eligible'],
+    ...eligible(d, p.id).map(s => [s.reg, s.name, s.campus, s.id in roll ? 'Absent' : 'Present', roll[s.id] ?? '', p.excused?.includes(s.id) ? 'Yes' : ''])]);
 }
 
-// Upload (CSV / Excel) or paste a student list, then review names and campuses before they are added.
-export function StudentImport({ rows, setRows, fallback, setFallback }: { rows: Row[]; setRows: (r: Row[]) => void; fallback: Campus; setFallback: (c: Campus) => void }) {
+// a CSV or Excel file's first sheet as a table of text cells
+export const readTable = async (f: File) => /\.xlsx$/i.test(f.name)
+  ? (await (await import('read-excel-file/browser')).readSheet(f)).map(r => r.map(c => String(c ?? '')))
+  : toTable(await f.text());
+
+// Upload (CSV / Excel) or paste a student list, then review names and campuses before they are added. Students already
+// placed (by registration number) are left out, listed under a line that says so.
+export function StudentImport({ rows, setRows, fallback, setFallback, placed }: { rows: Row[]; setRows: (r: Row[]) => void; fallback: Campus; setFallback: (c: Campus) => void; placed?: Map<string, Placed> }) {
   const [over, setOver] = useState(false);
   const [paste, setPaste] = useState<string | null>(null);
   const [file, setFile] = useState('');
@@ -96,10 +102,7 @@ export function StudentImport({ rows, setRows, fallback, setFallback }: { rows: 
   const load = async (f?: File) => {
     if (!f) return;
     try {
-      const table = /\.xlsx$/i.test(f.name)
-        ? (await (await import('read-excel-file/browser')).readSheet(f)).map(r => r.map(c => String(c ?? '')))
-        : toTable(await f.text());
-      take(parseStudents(table), f.name);
+      take(parseStudents(await readTable(f)), f.name);
     } catch { toast("Couldn't read that file. Save it as .csv or .xlsx and try again", true) }
   };
 
@@ -124,11 +127,12 @@ export function StudentImport({ rows, setRows, fallback, setFallback }: { rows: 
     </div>
   );
 
-  const unknown = rows.filter(r => !r.campus).length, noReg = rows.filter(r => !r.reg).length, n = (k: Campus) => rows.filter(r => (r.campus || fallback) === k).length;
+  const out = rows.filter(r => placed?.has(r.reg)), keep = rows.filter(r => !placed?.has(r.reg));
+  const unknown = keep.filter(r => !r.campus).length, noReg = keep.filter(r => !r.reg).length, n = (k: Campus) => keep.filter(r => (r.campus || fallback) === k).length;
   return (
     <div className="importer">
       <div className="counts">
-        <b>{rows.length} students</b>{file && <span className="meta">from {file}</span>}
+        <b>{keep.length} students</b>{file && <span className="meta">from {file}</span>}
         <span className="camp c-BLR">BLR {n('BLR')}</span><span className="camp c-MPL">MPL {n('MPL')}</span>
         {noReg > 0 && <span className="meta warn">{noReg} without a registration number</span>}
         <div className="sp" />
@@ -140,8 +144,16 @@ export function StudentImport({ rows, setRows, fallback, setFallback }: { rows: 
           <div className="seg">{(['BLR', 'MPL'] as Campus[]).map(k => <button key={k} className={fallback === k ? 'on' : ''} onClick={() => setFallback(k)}>{k}</button>)}</div>
         </div>
       )}
+      {out.length > 0 && (
+        <details className="pl-out">
+          <summary><Icon n="award" s={15} /><span><b>{out.length} already placed</b>, left out of this drive</span><Icon n="chevron" s={14} /></summary>
+          <div className="plist">{out.map(r => (
+            <div key={r.reg} className="prow"><span className="reg">{r.reg}</span><span className="nm">{r.name}</span><span className="meta">{placed!.get(r.reg)!.company}</span></div>
+          ))}</div>
+        </details>
+      )}
       <div className="scroll plist">
-        {rows.map((r, i) => (
+        {keep.map((r, i) => (
           <div key={i} className="prow">
             <span className="num">{i + 1}</span><span className="reg">{r.reg || '—'}</span><span className="nm">{r.name}</span>
             {r.campus || fallback ? <Camp c={r.campus || fallback} /> : <span className="meta warn">No campus</span>}

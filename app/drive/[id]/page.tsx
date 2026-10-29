@@ -1,7 +1,7 @@
 'use client';
 import { useParams, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { LABEL, ORDER, PHASES, SHORT, called, lead, eligible, missed, endOf, forecast, phasesOf, startOf, type Drive, type Phase, type PhaseKey, type Pupil, type Status } from '@/lib/drive';
+import { LABEL, called, gates, lead, eligible, missed, endOf, forecast, phasesOf, shortOf, startOf, titleOf, type Drive, type Phase, type PhaseId, type Pupil, type Status } from '@/lib/drive';
 import { Board, Camp, span } from '../../board';
 import { Activity, Setup, Students, Summary } from '../../panels';
 import { DriveDash } from '../../phases';
@@ -31,7 +31,7 @@ export default function Desk() {
   const { x, live, send, gate } = useDrive(id);
   const [tab, setTab] = useState<Tab>('board');
   const [inside, setInside] = useState(false); // the interview dashboard, opened from the drive's interviews column
-  const [att, setAtt] = useState<PhaseKey | null>(null); // a talk's or test's attendance, opened from the drive dashboard
+  const [att, setAtt] = useState<PhaseId | null>(null); // a talk's or test's attendance, opened from the drive dashboard
   const [view, setView] = useState<Status | 'present' | null>(null); // header number clicked → read-only list of those students
   const [sheet, showSheet] = useSheet();
   useEffect(() => { if (view) showSheet() }, [view]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -57,9 +57,9 @@ export default function Desk() {
   // Each phase's attendance, and the interview board, only for those who run that phase (x.can: a senior, or its volunteers).
   const out = () => setInside(false);
   if (d.status === 'planned' || !inside || !x.can.int) {
-    const ap = phasesOf(d).find(p => p.k === att);
-    if (ap && x.can[ap.k] && Date.now() < endOf(ap)) return <PhaseRoll d={d} p={ap} send={send} back={() => setAtt(null)} />;
-    const attend = (p: Phase) => { if (!p.roll) send({ type: 'phaseRoll', k: p.k }); setAtt(p.k) };
+    const ap = phasesOf(d).find(p => p.id === att);
+    if (ap && x.can[ap.id] && Date.now() < endOf(ap)) return <PhaseRoll d={d} p={ap} send={send} back={() => setAtt(null)} />;
+    const attend = (p: Phase) => { if (!p.roll) send({ type: 'phaseRoll', k: p.id }); setAtt(p.id) };
     return <DriveDash d={d} send={send} onDelete={del} open={() => setInside(true)} attend={attend} me={x.me} can={x.can} asks={x.asks} />;
   }
   if (d.status === 'live' && !d.attendance) return <Attendance d={d} send={send} also={x.also} out={out} />;
@@ -124,11 +124,11 @@ const Attendance = ({ d, send, also, out }: { d: Drive; send: Send; also: Seen; 
 // A talk's or test's attendance, of the students eligible for it. Saved as it is taken; final once the phase ends,
 // which is done from its column on the drive's page.
 const PhaseRoll = ({ d, p, send, back }: { d: Drive; p: Phase; send: Send; back: () => void }) => (
-  <RollCall d={d} home={back} people={eligible(d, p.k)} roll={p.roll} badge={`${SHORT[p.k]} attendance`} send={send}
-    earlier={missed(d).filter(m => ORDER.indexOf(m.k) < ORDER.indexOf(p.k))}
-    meta={<div className="pmeta"><span><Icon n="roll" s={14} />{PHASES[p.k]}</span><span><Icon n="clock" s={14} />{p.k === 'ppt' ? `Started ${tm(startOf(p))} · ends by ${tm(endOf(p))}` : Date.now() < startOf(p) ? `Goes live at ${tm(startOf(p))} · can be ended from then` : `Started ${tm(startOf(p))} · runs until you end it`}</span>{p.venue && <span><Icon n="pin" s={14} />{p.venue}</span>}</div>}
-    mark={(id, absent, reason) => send({ type: 'phaseRoll', k: p.k, id, absent, reason })} start={() => send({ type: 'phaseRoll', k: p.k })}
-    intro={`${eligible(d, p.k).length} eligible students.`}
+  <RollCall d={d} home={back} people={eligible(d, p.id)} roll={p.roll} badge={`${shortOf(d, p)} attendance`} send={send}
+    earlier={missed(d).filter(m => gates(d, phasesOf(d).findIndex(x => x.id === p.id)).some(g => g.id === m.k))}
+    meta={<div className="pmeta"><span><Icon n="roll" s={14} />{titleOf(d, p)}</span><span><Icon n="clock" s={14} />{p.k === 'ppt' ? `Started ${tm(startOf(p))} · ends by ${tm(endOf(p))}` : Date.now() < startOf(p) ? `Goes live at ${tm(startOf(p))} · can be ended from then` : `Started ${tm(startOf(p))} · runs until you end it`}</span>{p.venue && <span><Icon n="pin" s={14} />{p.venue}</span>}</div>}
+    mark={(id, absent, reason) => send({ type: 'phaseRoll', k: p.id, id, absent, reason })} start={() => send({ type: 'phaseRoll', k: p.id })}
+    intro={`${eligible(d, p.id).length} eligible students.`}
     bar={<button onClick={back}><Icon n="left" />Back to drive</button>} />
 );
 
@@ -212,15 +212,15 @@ function RollCall({ d, home, people, roll, mark, start, intro, bar, meta, top, a
                   {gone.length > 0 && <tr className="sect"><td colSpan={6}>Marked absent · {gone.length}</td></tr>}
                   {gone.map(row)}
                   {before.length > 0 && <tr className="sect"><td colSpan={6}>Absent at an earlier phase · {before.length}<span> · make them eligible to add them here</span></td></tr>}
-                  {before.map(({ s, k, reason }) => (
+                  {before.map(({ s, k, p, reason }) => (
                     <tr key={s.id} className="abs">
                       <td className="cb" />
                       <td className="num hide-sm" />
                       <td className="reg hide-sm">{s.reg}</td>
                       <td><b>{s.name}</b><small className="reg sm-only">{s.reg}</small></td>
                       <td className="hide-sm"><Camp c={s.campus} /></td>
-                      <td><div className="why"><span className="meta nowrap">Missed the {SHORT[k]}</span>
-                        <Field value={reason} placeholder="Reason (optional)" maxLength={200} aria-label={`Why ${s.name} missed the ${SHORT[k]}`} onSave={reason => send({ type: 'reason', k, id: s.id, reason })} />
+                      <td><div className="why"><span className="meta nowrap">Missed the {shortOf(d, p)}</span>
+                        <Field value={reason} placeholder="Reason (optional)" maxLength={200} aria-label={`Why ${s.name} missed the ${shortOf(d, p)}`} onSave={reason => send({ type: 'reason', k, id: s.id, reason })} />
                         <button className="sm" onClick={() => send({ type: 'excuse', k, id: s.id })}><Icon n="check" s={13} />Make eligible</button></div></td>
                     </tr>
                   ))}

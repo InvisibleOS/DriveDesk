@@ -2,10 +2,10 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { KINDS, ORDER, PHASES, SHORT, lead, type Campus, type Kind, type Phase, type PhaseKey, type Row } from '@/lib/drive';
+import { KINDS, ORDER, PHASES, lead, shortOf, type Campus, type Drive, type Kind, type Phase, type PhaseKey, type Row } from '@/lib/drive';
 import { StudentImport } from '../panels';
 import { PICON, PhaseColumns } from '../phases';
-import { Icon, TopBar, post, toast, usePeople } from '../ui';
+import { Icon, Stepper, TopBar, post, toast, usePeople, usePlaced } from '../ui';
 
 // Configuring a new drive: the company, its type, which phases it has (always in the same order) with where and when
 // each happens and its volunteers, and the list of students. Creating it opens the drive dashboard; interviews are set up there on the day.
@@ -13,16 +13,18 @@ export default function Create() {
   const router = useRouter();
   const [company, setCompany] = useState('');
   const [kind, setKind] = useState<Kind | ''>('');
-  const [on, setOn] = useState<PhaseKey[]>(['int']);
-  const [info, setInfo] = useState<Record<PhaseKey, Phase>>(() => Object.fromEntries(ORDER.map(k => [k, { k, venue: '', at: '', crew: [] as string[] }])) as Record<PhaseKey, Phase>);
+  // the phases, in order: the talk, any number of OAs, the interviews; 'oa', 'oa2'… as the engine names them
+  const [phases, setPhases] = useState<Phase[]>([{ id: 'int', k: 'int', venue: '', at: '', crew: [] }]);
+  const [together, setTogether] = useState(false), [day, setDay] = useState('');
   const [rows, setRows] = useState<Row[]>([]); // the students: required, every phase draws on them
   const [fallback, setFallback] = useState<Campus>('');
   const [busy, setBusy] = useState(false);
   useEffect(() => { // from a day on the calendar: that day, 9 in the morning
     const qd = new URLSearchParams(window.location.search).get('date');
-    if (qd && /^\d{4}-\d{2}-\d{2}$/.test(qd)) setInfo(i => Object.fromEntries(ORDER.map(k => [k, { ...i[k], at: `${qd}T09:00` }])) as Record<PhaseKey, Phase>);
+    if (qd && /^\d{4}-\d{2}-\d{2}$/.test(qd)) { setDay(qd); setPhases(ph => ph.map(p => ({ ...p, at: `${qd}T09:00` }))) }
   }, []);
-  const people = usePeople();
+  const people = usePeople(), placedList = usePlaced();
+  const placed = new Map((placedList ?? []).map(p => [p.reg, p])), kept = rows.filter(r => !placed.has(r.reg)); // placed students are left out
   if (people && !lead(people.me)) return ( // seniors create drives; a junior reaching this page by its address is sent back
     <div className="app">
       <TopBar title="New drive" />
@@ -30,20 +32,26 @@ export default function Create() {
         <div className="row"><Link className="btn" href="/"><Icon n="left" />All drives</Link></div></div></main>
     </div>
   );
-  const phases = ORDER.filter(k => on.includes(k)).map(k => info[k]);
-  const flip = (k: PhaseKey) => on.includes(k) ? on.length > 1 ? setOn(on.filter(x => x !== k)) : toast('A drive needs at least one phase', true) : setOn([...on, k]);
+  const blank = (k: PhaseKey, id: string): Phase => ({ id, k, venue: '', at: day ? `${day}T09:00` : '', crew: [] });
+  const inOrder = (ph: Phase[]) => ORDER.flatMap(k => ph.filter(p => p.k === k));
+  const has = (k: PhaseKey) => phases.some(p => p.k === k), oas = phases.filter(p => p.k === 'oa').length;
+  const flip = (k: PhaseKey) => !has(k) ? setPhases(inOrder([...phases, blank(k, k)]))
+    : phases.some(p => p.k !== k) ? setPhases(phases.filter(p => p.k !== k)) : toast('A drive needs at least one phase', true);
+  const moreOA = () => setPhases(inOrder([...phases, blank('oa', `oa${oas + 1}`)]));
+  const lessOA = () => setPhases(phases.filter(p => p !== phases.findLast(x => x.k === 'oa')));
   const create = async () => {
     if (!company.trim()) return toast('Enter the company name', true);
     if (!kind) return toast('Pick the type of drive', true);
     if (!rows.length) return toast('Upload the list of students', true);
-    if (!fallback && !rows.every(r => r.campus)) return toast('Every student needs a campus: pick BLR or MPL for the ones without one', true);
+    if (!kept.length) return toast('Everyone on this list is already placed', true);
+    if (!fallback && !kept.every(r => r.campus)) return toast('Every student needs a campus: pick BLR or MPL for the ones without one', true);
     setBusy(true);
-    const students = rows.map(r => ({ ...r, campus: r.campus || fallback }));
-    try { router.push(`/drive/${(await post<{ id: string }>('/api/drives', { company, plan: { kind, phases, students } })).id}`) }
+    const students = kept.map(r => ({ ...r, campus: r.campus || fallback }));
+    try { router.push(`/drive/${(await post<{ id: string }>('/api/drives', { company, plan: { kind, phases, together: together && phases.filter(p => p.k !== 'ppt').length > 1, students } })).id}`) }
     catch { setBusy(false) }
   };
 
-  const missing = !company.trim() ? 'Enter the company name' : !kind ? 'Pick the type of drive' : !rows.length ? 'Upload the list of students' : '';
+  const missing = !company.trim() ? 'Enter the company name' : !kind ? 'Pick the type of drive' : !rows.length ? 'Upload the list of students' : !kept.length ? 'Everyone on this list is already placed' : '';
 
   return (
     <div className="app">
@@ -55,7 +63,7 @@ export default function Create() {
             <p className="meta">The company, its phases and the students. Phases you aren&rsquo;t sure about yet can be added later, from the drive&rsquo;s page.</p>
           </div>
 
-          <Section title="Company" note="How the drive shows on the dashboard. Both stay fixed once it is created.">
+          <Section title="Company" note="How the drive shows on the dashboard. Both can be changed later from the gear on the drive’s page.">
             <label className="field">Company name
               <input autoFocus value={company} onChange={e => setCompany(e.target.value)} placeholder="e.g. Optum" maxLength={80} />
             </label>
@@ -66,28 +74,34 @@ export default function Create() {
             </div>
           </Section>
 
-          <Section title="Phases" note="They always run in this order. Only students present at a phase go on to the next one.">
+          <Section title="Phases" note="The PPT always comes first. One after another, only students present at a phase go on to the next; at the same time, each takes its own shortlist.">
             <div className="ppick">{ORDER.map(k => (
-              <label key={k} className={on.includes(k) ? 'on' : ''}>
+              <label key={k} className={has(k) ? 'on' : ''}>
                 <span className="pico"><Icon n={PICON[k]} s={16} /></span>
                 <span><b>{PHASES[k]}</b><small>{BLURB[k]}</small></span>
-                <input type="checkbox" checked={on.includes(k)} onChange={() => flip(k)} />
+                <input type="checkbox" checked={has(k)} onChange={() => flip(k)} />
               </label>
             ))}</div>
-            <PhaseColumns phases={phases} onChange={(k, p) => setInfo({ ...info, [k]: { ...info[k], ...p } })} />
+            {(oas > 0 || phases.filter(p => p.k !== 'ppt').length > 1) && <div className="pmore">
+              {oas > 0 && <span className="pm-oa">Online assessments<Stepper label="Online assessments" value={oas} min={1} max={9} less={lessOA} more={moreOA} /></span>}
+              {phases.filter(p => p.k !== 'ppt').length > 1 && <div className="seg" role="radiogroup" aria-label="How the phases run">
+                {([[false, 'One after another'], [true, 'At the same time']] as const).map(([t, l]) => <button key={l} role="radio" aria-checked={together === t} className={together === t ? 'on' : ''} onClick={() => setTogether(t)}>{l}</button>)}</div>}
+              {together && phases.filter(p => p.k !== 'ppt').length > 1 && <p className="meta">The OAs and interviews run side by side, each for the students on its shortlist (uploaded from the drive&rsquo;s page). Anyone absent at the PPT stays out of all of them.</p>}
+            </div>}
+            <PhaseColumns phases={phases} onChange={(id, p) => setPhases(phases.map(x => x.id === id ? { ...x, ...p } : x))} />
           </Section>
 
           <Section title="Students" note="Everyone who can take part, from a CSV or Excel sheet.">
-            <StudentImport rows={rows} setRows={setRows} fallback={fallback} setFallback={setFallback} />
+            <StudentImport rows={rows} setRows={setRows} fallback={fallback} setFallback={setFallback} placed={placed} />
           </Section>
         </div>
       </main>
       <footer className="cfg-foot">
         <div className="cfg-sum">{company.trim() ? <b>{company.trim()}</b> : <span className="faint">Untitled drive</span>}
-          <span>{phases.map(p => SHORT[p.k] === 'interviews' ? 'Interviews' : SHORT[p.k]).join(' → ')}</span>
-          {rows.length > 0 && <span>{rows.length} students</span>}</div>
+          <span>{phases.map(p => { const n = shortOf({ phases } as Drive, p); return n[0].toUpperCase() + n.slice(1) }).join(together ? ' · ' : ' → ')}</span>
+          {kept.length > 0 && <span>{kept.length} students</span>}</div>
         <Link className="btn ghost hide-sm" href="/">Cancel</Link>
-        <button className="primary" disabled={busy} onClick={create} title={missing || undefined}>{busy ? 'Creating…' : 'Create drive'}<Icon n="right" /></button>
+        <button className="primary" disabled={busy || !placedList} onClick={create} title={missing || undefined}>{busy ? 'Creating…' : 'Create drive'}<Icon n="right" /></button>
       </footer>
     </div>
   );

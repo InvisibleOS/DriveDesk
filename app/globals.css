@@ -589,3 +589,32 @@ main.cfg-main{overflow:auto;padding-bottom:40px}
 .tl .live .ph-mark{background:var(--free-bg);color:var(--free-ink);box-shadow:inset 0 0 0 1px var(--free-line),0 0 0 4px var(--free-bg)}
 .tl .cur .ph-mark{background:var(--accent-bg);color:var(--accent-ink);box-shadow:inset 0 0 0 1px var(--accent-line)}
 @media (max-width:1000px){ .tl,.phs{grid-template-columns:minmax(0,1fr)} .tl>li::after{display:none} }
+
+/* Placed students: companies on the left filter the table on the right */
+.placed{display:flex;flex-direction:column;gap:16px}
+.pl-grid{flex:1;min-height:0;display:grid;grid-template-columns:250px minmax(0,1fr);gap:16px}
+.pl-cos .sect-t{padding:14px 16px 8px}
+.pl-cos .scroll{padding:0 8px 8px;display:flex;flex-direction:column;gap:1px}
+.pl-cos button{flex:none;height:34px;justify-content:space-between;gap:10px;border:none;background:none;box-shadow:none;color:var(--ink2);font-weight:450;padding:0 10px}
+.pl-cos button span{overflow:hidden;text-overflow:ellipsis} .pl-cos button b{font-weight:500;color:var(--mute);font-variant-numeric:tabular-nums}
+.pl-cos button:hover{background:var(--hover);color:var(--ink)} .pl-cos button.on{background:var(--accent-bg);color:var(--accent-ink)} .pl-cos button.on b{color:var(--accent-ink)}
+.pl-list .scroll{flex:1} .pl-list td a{color:inherit} .pl-list td a:hover{color:var(--accent-ink)}
+@media (max-width:760px){.pl-grid{grid-template-columns:1fr} .pl-cos{max-height:220px}}
+.pl-out{border:1px solid var(--line);border-radius:var(--r-sm);background:var(--sunken)}
+.pl-out summary{display:flex;align-items:center;gap:9px;padding:9px 12px;cursor:pointer;list-style:none;font-size:12.5px;color:var(--ink2)} .pl-out summary::-webkit-details-marker{display:none}
+.pl-out summary>svg:first-child{color:var(--free-ink)} .pl-out summary>span{flex:1} .pl-out summary>svg:last-child{color:var(--mute);transition:transform .15s} .pl-out[open] summary>svg:last-child{transform:rotate(180deg)}
+.pl-out .plist{max-height:200px;overflow:auto;border-top:1px solid var(--line2)}
+.pl-q{width:290px} @media (max-width:760px){.pl-q{width:100%}}
+.ph-top{display:flex;align-items:center;gap:12px;flex-wrap:wrap} .ph-top .seg button{height:28px;font-size:12.5px}
+.pmore{display:flex;align-items:center;gap:14px;flex-wrap:wrap} .pmore .meta{flex-basis:100%} .pm-oa{display:inline-flex;align-items:center;gap:10px;font-size:13px;color:var(--ink2)}
+.slist{display:flex;align-items:center;flex-wrap:wrap;gap:8px} .slist>.btn,.slist>button{height:28px}
+.slist-sum{list-style:none;margin:4px 0 6px;padding:0;display:flex;flex-direction:column;gap:8px}
+.slist-sum li{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border-radius:var(--r-sm);font-size:13px;line-height:1.45}
+.slist-sum li>svg{flex:none;margin-top:2px} .slist-sum li>span{display:flex;flex-direction:column;gap:3px;min-width:0}
+.slist-sum small{font-size:12px;color:var(--ink2);overflow-wrap:anywhere;max-height:84px;overflow:auto}
+.slist-sum .ok{background:var(--free-bg);color:var(--free-ink)} .slist-sum .warn{background:var(--pend-bg);color:var(--pend-ink)} .slist-sum .bad{background:var(--bad-bg);color:var(--bad-ink)}
+/* several OAs stack in one column, on the drive page and in New drive */
+.ph-col{min-width:0;display:flex;flex-direction:column;gap:16px} .ph-col>.ph-card{flex:1}
+.pcols{grid-template-columns:repeat(var(--n),minmax(0,1fr))} .pcol-k{min-width:0;display:flex;flex-direction:column;gap:12px}
+@media (max-width:1000px){.pcols{grid-template-columns:minmax(0,1fr)}}
+.slist-sum li>span{display:block} .slist-sum small{display:block;margin-top:3px}
