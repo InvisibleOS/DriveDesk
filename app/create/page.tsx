@@ -15,7 +15,7 @@ export default function Create() {
   const [kind, setKind] = useState<Kind | ''>('');
   // the phases, in order: the talk, any number of OAs, the interviews; 'oa', 'oa2'… as the engine names them
   const [phases, setPhases] = useState<Phase[]>([{ id: 'int', k: 'int', venue: '', at: '', crew: [] }]);
-  const [together, setTogether] = useState(false), [day, setDay] = useState('');
+  const [day, setDay] = useState('');
   const [rows, setRows] = useState<Row[]>([]); // the students: required, every phase draws on them
   const [fallback, setFallback] = useState<Campus>('');
   const [busy, setBusy] = useState(false);
@@ -47,7 +47,7 @@ export default function Create() {
     if (!fallback && !kept.every(r => r.campus)) return toast('Every student needs a campus: pick BLR or MPL for the ones without one', true);
     setBusy(true);
     const students = kept.map(r => ({ ...r, campus: r.campus || fallback }));
-    try { router.push(`/drive/${(await post<{ id: string }>('/api/drives', { company, plan: { kind, phases, together: together && phases.filter(p => p.k !== 'ppt').length > 1, students } })).id}`) }
+    try { router.push(`/drive/${(await post<{ id: string }>('/api/drives', { company, plan: { kind, phases, students } })).id}`) }
     catch { setBusy(false) }
   };
 
@@ -74,7 +74,7 @@ export default function Create() {
             </div>
           </Section>
 
-          <Section title="Phases" note="The PPT always comes first. One after another, only students present at a phase go on to the next; at the same time, each takes its own shortlist.">
+          <Section title="Phases" note="The PPT always comes first. Each OA and the interviews take either those present at the phase before them or the company’s shortlist, chosen on the drive’s page before their attendance.">
             <div className="ppick">{ORDER.map(k => (
               <label key={k} className={has(k) ? 'on' : ''}>
                 <span className="pico"><Icon n={PICON[k]} s={16} /></span>
@@ -82,11 +82,8 @@ export default function Create() {
                 <input type="checkbox" checked={has(k)} onChange={() => flip(k)} />
               </label>
             ))}</div>
-            {(oas > 0 || phases.filter(p => p.k !== 'ppt').length > 1) && <div className="pmore">
-              {oas > 0 && <span className="pm-oa">Online assessments<Stepper label="Online assessments" value={oas} min={1} max={9} less={lessOA} more={moreOA} /></span>}
-              {phases.filter(p => p.k !== 'ppt').length > 1 && <div className="seg" role="radiogroup" aria-label="How the phases run">
-                {([[false, 'One after another'], [true, 'At the same time']] as const).map(([t, l]) => <button key={l} role="radio" aria-checked={together === t} className={together === t ? 'on' : ''} onClick={() => setTogether(t)}>{l}</button>)}</div>}
-              {together && phases.filter(p => p.k !== 'ppt').length > 1 && <p className="meta">The OAs and interviews run side by side, each for the students on its shortlist (uploaded from the drive&rsquo;s page). Anyone absent at the PPT stays out of all of them.</p>}
+            {oas > 0 && <div className="pmore">
+              <span className="pm-oa">Online assessments<Stepper label="Online assessments" value={oas} min={1} max={9} less={lessOA} more={moreOA} /></span>
             </div>}
             <PhaseColumns phases={phases} onChange={(id, p) => setPhases(phases.map(x => x.id === id ? { ...x, ...p } : x))} />
           </Section>
@@ -98,7 +95,7 @@ export default function Create() {
       </main>
       <footer className="cfg-foot">
         <div className="cfg-sum">{company.trim() ? <b>{company.trim()}</b> : <span className="faint">Untitled drive</span>}
-          <span>{phases.map(p => { const n = shortOf({ phases } as Drive, p); return n[0].toUpperCase() + n.slice(1) }).join(together ? ' · ' : ' → ')}</span>
+          <span>{phases.map(p => { const n = shortOf({ phases } as Drive, p); return n[0].toUpperCase() + n.slice(1) }).join(' → ')}</span>
           {kept.length > 0 && <span>{kept.length} students</span>}</div>
         <Link className="btn ghost hide-sm" href="/">Cancel</Link>
         <button className="primary" disabled={busy || !placedList} onClick={create} title={missing || undefined}>{busy ? 'Creating…' : 'Create drive'}<Icon n="right" /></button>

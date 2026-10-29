@@ -1,6 +1,6 @@
 'use client';
-import { Children, useState } from 'react';
-import { KINDS, PHASES, absentAt, gates, called, lead as isLead, occ, canAdd, endOf, startOf, eligible, isVirtual, venuesOf, localDate, phasesOf, regOf, removable, shortOf, titleOf, type Ask, type Drive, type Kind, type Member, type Phase, type PhaseId, type PhaseKey, type PhaseState, type Pupil, phaseStates } from '@/lib/drive';
+import { Children, useRef, useState } from 'react';
+import { KINDS, PHASES, absentAt, waitsFor, chosen, fromPrev, prevOf, called, lead as isLead, occ, canAdd, endOf, startOf, eligible, isVirtual, venuesOf, localDate, phasesOf, regOf, removable, shortOf, titleOf, type Ask, type Drive, type Kind, type Member, type Phase, type PhaseId, type PhaseKey, type PhaseState, type Pupil, phaseStates } from '@/lib/drive';
 import { Camp } from './board';
 import { CabinsEdit, RoundsEdit, Summary, Venue, exportAttendance, readTable } from './panels';
 import { Av, DeskMenu, Field, Icon, More, PageHead, Sheet, Stepper, TopBar, ask, nameOf, post, tm, toast, useNow, usePeople, useSheet, when, type Send } from './ui';
@@ -124,8 +124,8 @@ export function DriveDash({ d, send, onDelete, open, attend, me, can, asks }: {
 }) {
   const boss = isLead(me);
   const ph = phasesOf(d), st = phaseStates(d, useNow()); // states move on with the clock
-  const plan = (p: Partial<{ kind: Kind; phases: Phase[]; together: boolean }>) => send({ type: 'plan', plan: { kind: d.kind ?? 'P', phases: ph, together: !!d.together, ...p } });
-  const waits = (i: number) => gates(d, i).some(g => st[ph.findIndex(x => x.id === g.id)] !== 'Done'); // its attendance opens once these end
+  const plan = (p: Partial<{ kind: Kind; phases: Phase[] }>) => send({ type: 'plan', plan: { kind: d.kind ?? 'P', phases: ph, ...p } });
+  const waits = (i: number) => waitsFor(d, i).some(g => st[ph.findIndex(x => x.id === g.id)] !== 'Done'); // its attendance opens once these end
   const change = (id: PhaseId, p: Partial<Phase>) => plan({ phases: ph.map(x => x.id === id ? { ...x, ...p } : x) });
   // a new phase goes in its place: the talk first, an OA after the other OAs, the interviews last (the engine gives it an id)
   const addPhase = (k: PhaseKey) => {
@@ -171,13 +171,7 @@ export function DriveDash({ d, send, onDelete, open, attend, me, can, asks }: {
 
           {d.status === 'done' && <><h3 className="sect-t">Report</h3><Summary d={d} /></>}{/* the interviews' report, up top once the drive is over */}
 
-          <div className="ph-top"><h3 className="sect-t">Phases</h3>
-            {boss && d.status === 'planned' && ph.filter(p => p.k !== 'ppt').length > 1 && (
-              <div className="seg" role="radiogroup" aria-label="How the phases run">{([[false, 'One after another'], [true, 'At the same time']] as const).map(([t, l]) =>
-                <button key={l} role="radio" aria-checked={!!d.together === t} className={!!d.together === t ? 'on' : ''} onClick={() => plan({ together: t })}
-                  title={t ? 'The OAs and interviews run side by side, each for its own shortlist. Anyone absent at the PPT stays out of all of them' : 'Each phase starts once the one before it ends, for those present at it'}>{l}</button>)}</div>)}
-            {!boss && d.together && <span className="tag">At the same time</span>}
-          </div>
+          <h3 className="sect-t">Phases</h3>
           <ol className="tl" style={{ '--n': cols.length } as React.CSSProperties}>
             {cols.map(c => { // one step per column: several OAs share theirs
               const s = c.map(x => st[x.i]), [{ p, i }] = c;
@@ -192,7 +186,7 @@ export function DriveDash({ d, send, onDelete, open, attend, me, can, asks }: {
               <PhaseCard key={p.id} d={d} p={p} s={st[i]} settle={can[p.id] ? () => settle(p) : undefined}
                 drop={boss && ph.length > 1 && removable(d, st[i]) ? () => dropPhase(p) : undefined}
                 helpers={<Helpers d={d} p={p} s={st[i]} me={me} asks={asks} onChange={crew => change(p.id, { crew })} />}
-                shortlist={p.k !== 'ppt' && <Shortlist d={d} p={p} edit={!!can[p.id]} send={send} />}>
+                source={p.k !== 'ppt' && <Source d={d} p={p} edit={!!can[p.id]} send={send} />}>
                 {p.k === 'int' ? <Interviews d={d} p={p} s={st[i]} open={open} send={send} edit={!!can[p.id]} wait={waits(i)} />
                   : <Turnout d={d} p={p} s={st[i]} send={send} edit={!!can[p.id]} attend={() => attend(p)} people={i ? undefined : people} wait={waits(i)} />}
               </PhaseCard>
@@ -240,8 +234,8 @@ function DriveDetails({ d, sheet, send }: { d: Drive; sheet: React.RefObject<HTM
 // One phase's column: where, when and who (helpers: its volunteers), then (children) its attendance or interviews, with
 // their option buttons at the bottom. A drive with a single phase gets one wide card, the two halves side by side.
 // settle / drop: editing its venue and time, removing it (for those who run the drive).
-function PhaseCard({ d, p, s, settle, drop, helpers, shortlist, children }: {
-  d: Drive; p: Phase; s: PhaseState; settle?: () => void; drop?: () => void; helpers: React.ReactNode; shortlist?: React.ReactNode; children: React.ReactNode;
+function PhaseCard({ d, p, s, settle, drop, helpers, source, children }: {
+  d: Drive; p: Phase; s: PhaseState; settle?: () => void; drop?: () => void; helpers: React.ReactNode; source?: React.ReactNode; children: React.ReactNode;
 }) {
   const name = titleOf(d, p);
   return (
@@ -256,7 +250,7 @@ function PhaseCard({ d, p, s, settle, drop, helpers, shortlist, children }: {
             <div><dt>Venue</dt><dd>{p.venue || <span className="faint">Not set yet</span>}</dd></div>
             <div><dt>When</dt><dd>{ran(d, p, s)}</dd></div>
             <div><dt>Volunteers</dt><dd>{helpers}</dd></div>
-            {shortlist && <div><dt>Shortlist</dt><dd>{shortlist}</dd></div>}
+            {source && <div><dt>Students</dt><dd>{source}</dd></div>}
           </dl>
           {children}
         </div>
@@ -295,7 +289,7 @@ function Turnout({ d, p, s, send, edit, attend, people, wait }: { d: Drive; p: P
         {people && !roll && <button onClick={people}><Icon n="roll" />View students</button>}
         {edit && <>
           {live && <button className="danger soft" disabled={!roll && !virtual} title={!roll && !virtual ? 'Take attendance first' : undefined} onClick={() => endPhase(d, p, send)}><Icon n="flag" />End {what}</button>}
-          <button className="primary" disabled={!roll && wait} title={!roll && wait ? 'The earlier phases decide who takes it: end them first' : undefined} onClick={attend}><Icon n="roll" />{roll ? 'Continue attendance' : 'Take attendance'}</button>
+          <button className="primary" disabled={!roll && (wait || !chosen(p))} title={!roll && !chosen(p) ? 'Choose who takes it first, under Students above' : !roll && wait ? 'The earlier phases decide who takes it: end them first' : undefined} onClick={attend}><Icon n="roll" />{roll ? 'Continue attendance' : 'Take attendance'}</button>
         </>}
       </div>
     </div>
@@ -360,13 +354,14 @@ function Roster({ d, sheet }: { d: Drive; sheet: React.RefObject<HTMLDialogEleme
   );
 }
 
-// An OA's or the interviews' shortlist from the company. Without one, everyone eligible takes part. Uploading a sheet
-// (any column of registration numbers) first shows who is on the drive's list and will take part, who missed an earlier
-// phase (they stay out), and numbers that aren't on the drive's list at all; it is saved only then. Fixed once the
-// phase's attendance has begun.
-function Shortlist({ d, p, edit, send }: { d: Drive; p: Phase; edit: boolean; send: Send }) {
-  const [box, openBox] = useSheet(), [got, setGot] = useState<{ file: string; regs: string[] } | null>(null);
+// Who takes an OA or the interviews, chosen before its attendance: those present at the phase before it (everyone on the
+// list for the first), or the company's shortlist. Uploading a shortlist (any column of registration numbers) first
+// shows who on it takes part, who missed the PPT (they stay out) and numbers that aren't on the drive's list; it is
+// saved only then. Fixed once the phase's attendance has begun.
+function Source({ d, p, edit, send }: { d: Drive; p: Phase; edit: boolean; send: Send }) {
+  const [box, openBox] = useSheet(), [got, setGot] = useState<{ file: string; regs: string[] } | null>(null), file = useRef<HTMLInputElement>(null);
   const locked = p.k === 'int' ? d.status !== 'planned' : !!p.roll, n = p.shortlist?.length, what = shortOf(d, p);
+  const ph = phasesOf(d), before = ph[prevOf(d, ph.findIndex(x => x.id === p.id))], prev = before ? `From the ${shortOf(d, before)}` : 'Everyone on the list';
   const load = async (f?: File) => {
     if (!f) return;
     try {
@@ -375,25 +370,34 @@ function Shortlist({ d, p, edit, send }: { d: Drive; p: Phase; edit: boolean; se
       setGot({ file: f.name, regs }); openBox();
     } catch { toast("Couldn't read that file. Save it as .csv or .xlsx and try again", true) }
   };
-  const drop = async () => { if (await ask(`Take the ${what}'s shortlist off?`, 'Everyone eligible takes part again.', 'Remove shortlist', true)) send({ type: 'shortlist', k: p.id, regs: null }) };
-  // who would take part without a shortlist here: the earlier phases decide that
-  const base = new Set(eligible({ ...d, phases: phasesOf(d).map(x => x.id === p.id ? { ...x, shortlist: undefined } : x) }, p.id).map(x => x.id));
+  const usePrev = async () => {
+    if (p.prev) return;
+    if (n && !await ask(`Take ${fromPrev(d, p)} instead?`, `The shortlist of ${n} no longer decides who takes the ${what}.`, 'Use them instead')) return;
+    send({ type: 'shortlist', k: p.id, regs: null });
+  };
+  // who a shortlist can include: everyone on the list who didn't miss the PPT
+  const base = new Set(eligible({ ...d, phases: ph.map(x => x.id === p.id ? { ...x, shortlist: (d.pool ?? []).map(s => s.id) } : x) }, p.id).map(x => x.id));
   const pool = new Map((d.pool ?? []).map(x => [x.reg, x]));
   const ok = got?.regs.filter(r => pool.has(r) && base.has(pool.get(r)!.id)) ?? [];
   const out = got?.regs.filter(r => pool.has(r) && !base.has(pool.get(r)!.id)).map(r => pool.get(r)!) ?? [];
   const unknown = got?.regs.filter(r => !pool.has(r)) ?? [];
-  const upload = (label: string) => <label className="btn sm">{label}<input type="file" accept=".csv,.xlsx,.txt" hidden onChange={e => { load(e.target.files?.[0]); e.target.value = '' }} /></label>;
   return (
     <div className="slist">
-      {n ? <span><b>{n}</b> student{n === 1 ? '' : 's'}</span> : <span className="faint" title="Without a shortlist, everyone eligible takes part">None</span>}
-      {edit && !locked && (n ? <>{upload('Replace')}<button className="sm ghost" onClick={drop}>Remove</button></> : upload('Upload'))}
+      {edit && !locked ? <>
+        <div className="seg src" role="radiogroup" aria-label={`Who takes the ${what}`}>
+          <button role="radio" aria-checked={!!p.prev} className={p.prev ? 'on' : ''} onClick={usePrev} title={`Those present at the phase before it take the ${what}`}>{prev}</button>
+          <button role="radio" aria-checked={!!n} className={n ? 'on' : ''} onClick={() => file.current?.click()} title={n ? 'Upload a new shortlist' : 'Upload the company\u2019s shortlist'}>{n ? `Shortlist · ${n}` : 'Shortlist'}</button>
+        </div>
+        <input ref={file} type="file" accept=".csv,.xlsx,.txt" hidden onChange={e => { load(e.target.files?.[0]); e.target.value = '' }} />
+        {!chosen(p) && <small className="src-need">Choose before taking attendance</small>}
+      </> : <span>{n ? <>Shortlist · <b>{n}</b> student{n === 1 ? '' : 's'}</> : p.prev ? prev : <span className="faint">Not chosen yet</span>}</span>}
       <dialog ref={box} className="ask slist-box" onClose={() => setGot(null)}>
         {got && <form method="dialog" onSubmit={() => send({ type: 'shortlist', k: p.id, regs: got.regs })}>
           <h3>Shortlist for the {what}</h3>
           <p>{got.regs.length} registration number{got.regs.length === 1 ? '' : 's'} in {got.file}.</p>
           <ul className="slist-sum">
             <li className="ok"><Icon n="check" s={15} /><span><b>{ok.length}</b> on the drive&rsquo;s list: they take the {what}</span></li>
-            {out.length > 0 && <li className="warn"><Icon n="alert" s={15} /><span><b>{out.length}</b> missed an earlier phase, so they stay out
+            {out.length > 0 && <li className="warn"><Icon n="alert" s={15} /><span><b>{out.length}</b> missed the PPT, so they stay out
               <small>{out.map(x => x.name).join(', ')}</small></span></li>}
             {unknown.length > 0 && <li className="bad"><Icon n="x" s={15} /><span><b>{unknown.length}</b> not on the drive&rsquo;s student list, left out
               <small className="reg">{unknown.join(', ')}</small></span></li>}
@@ -468,7 +472,7 @@ function Interviews({ d, p, s, open, send, edit, wait }: { d: Drive; p: Phase; s
         {!d.attendance
           ? <>
             <button disabled title="Confirm the attendance first">Open board<Icon n="right" /></button>
-            <button className="primary" disabled={planned && wait} title={planned && wait ? 'The earlier phases decide who takes part: end them first' : undefined} onClick={go}><Icon n="roll" />{opened ? 'Continue attendance' : 'Take attendance'}</button>
+            <button className="primary" disabled={planned && (wait || !chosen(p))} title={planned && !chosen(p) ? 'Choose who takes part first, under Students above' : planned && wait ? 'The earlier phases decide who takes part: end them first' : undefined} onClick={go}><Icon n="roll" />{opened ? 'Continue attendance' : 'Take attendance'}</button>
           </>
           : <>
             <button className="danger soft" disabled={!called(d)} title={!called(d) ? 'The interviews start with the first student called' : undefined} onClick={end}><Icon n="flag" />End interviews</button>

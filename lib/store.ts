@@ -210,7 +210,7 @@ export async function volunteer(id: string, k: PhaseId, what: 'ask' | 'withdraw'
     const a = asks.find(x => x.drive === id && x.k === k && x.user === user);
     if (!a) throw Error('That request is no longer there');
     if (what === 'approve') { // on the volunteers first: that is what lets them run it, even if marking the request fails
-      dispatch(id, { type: 'plan', plan: { kind: l.d.kind ?? 'P', together: !!l.d.together, phases: ph.map(p => p.id === k ? { ...p, crew: [...new Set([...p.crew, a.user])] } : p) } });
+      dispatch(id, { type: 'plan', plan: { kind: l.d.kind ?? 'P', phases: ph.map(p => p.id === k ? { ...p, crew: [...new Set([...p.crew, a.user])] } : p) } });
       await cloud.decide(id, k, a.id, 'approved').catch(() => {});
       msg = `${nameOf(a.user)} is volunteering at the ${label}`;
     } else {

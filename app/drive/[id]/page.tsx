@@ -1,14 +1,14 @@
 'use client';
 import { useParams, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { LABEL, called, gates, lead, eligible, missed, endOf, forecast, phasesOf, shortOf, startOf, titleOf, type Drive, type Phase, type PhaseId, type Pupil, type Status } from '@/lib/drive';
+import { LABEL, called, feeds, lead, eligible, missed, unlisted, endOf, forecast, phasesOf, shortOf, startOf, titleOf, type Drive, type Phase, type PhaseId, type Pupil, type Status } from '@/lib/drive';
 import { Board, Camp, span } from '../../board';
 import { Activity, Setup, Students, Summary } from '../../panels';
 import { DriveDash } from '../../phases';
 import { AlsoIn, DeskMenu, Field, Warnings, Icon, PageHead, Sheet, Stat, TopBar, ask, longDate, post, tm, useDrive, useNow, useSheet, type Seen, type Send } from '../../ui';
 
 type Tab = 'board' | 'setup' | 'log'; // 'board' is the summary once a drive has ended
-const STATS = [['present', 'Present', ''], ['in', 'In cabins', 'in'], ['pending', 'Awaiting', 'pend'], ['selected', 'Selected', 'ok'], ['rejected', 'Rejected', 'no'], ['absent', 'Absent', 'abs']] as const;
+const STATS = [['present', 'Present', ''], ['in', 'In cabins', 'in'], ['pending', 'Awaiting', 'pend'], ['selected', 'Selected', 'ok'], ['rejected', 'Rejected', 'no'], ['absent', 'Absent', 'abs'], ['out', 'Not eligible', '']] as const;
 
 // while a drive runs: how long students wait for each call (from attendance, then from leaving the cabin before), and when the last interview likely ends
 const Finish = ({ d }: { d: Drive }) => {
@@ -32,7 +32,7 @@ export default function Desk() {
   const [tab, setTab] = useState<Tab>('board');
   const [inside, setInside] = useState(false); // the interview dashboard, opened from the drive's interviews column
   const [att, setAtt] = useState<PhaseId | null>(null); // a talk's or test's attendance, opened from the drive dashboard
-  const [view, setView] = useState<Status | 'present' | null>(null); // header number clicked → read-only list of those students
+  const [view, setView] = useState<Status | 'present' | 'out' | null>(null); // header number clicked → read-only list of those students
   const [sheet, showSheet] = useSheet();
   useEffect(() => { if (view) showSheet() }, [view]); // eslint-disable-line react-hooks/exhaustive-deps
   const company = x?.drive.company;
@@ -46,8 +46,8 @@ export default function Desk() {
   }, [send]);
   if (gate || !x) return gate;
 
-  const d = x.drive, done = d.status === 'done', n = (st: string) => d.students.filter(s => st === 'present' ? s.status !== 'absent' : s.status === st).length + (st === 'absent' ? missed(d).length : 0); // absent counts those who missed a PPT or OA too
-  const title = (k: Status | 'present') => k === 'present' ? 'Present' : LABEL[k];
+  const d = x.drive, done = d.status === 'done', n = (st: string) => st === 'out' ? unlisted(d).length : d.students.filter(s => st === 'present' ? s.status !== 'absent' : s.status === st).length + (st === 'absent' ? missed(d).length : 0); // absent counts those who missed a PPT or OA too
+  const title = (k: Status | 'present' | 'out') => k === 'present' ? 'Present' : k === 'out' ? 'Not eligible' : LABEL[k];
   const cur: Tab = done && tab === 'setup' ? 'board' : tab; // an ended drive has its summary and logs, no settings
   const del = async () => {
     if (!await ask(`Delete the ${d.company} drive?`, `${longDate(d.date)}. It disappears from the dashboard and calendar. The file is kept in data/trash.`, 'Delete drive', true)) return;
@@ -86,8 +86,8 @@ export default function Desk() {
         {cur === 'board' ? <>
           <PageHead title={d.company} meta={<Meta d={d} />}>
             <div className="stats">
-              {/* an ended drive has nobody in a cabin; Awaiting stays only while some results were never given */}
-              {STATS.filter(([k]) => !done || (k !== 'in' && (k !== 'pending' || n(k) > 0))).map(([k, l, c]) => (
+              {/* an ended drive has nobody in a cabin; Awaiting stays only while some results were never given; Not eligible, while anyone is */}
+              {STATS.filter(([k]) => (k !== 'out' || n(k) > 0) && (!done || (k !== 'in' && (k !== 'pending' || n(k) > 0)))).map(([k, l, c]) => (
                 <Stat key={k} label={l} value={n(k)} tone={c} onClick={() => setView(k)} title={`Show ${title(k).toLowerCase()}`} />
               ))}
             </div>
@@ -125,7 +125,7 @@ const Attendance = ({ d, send, also, out }: { d: Drive; send: Send; also: Seen; 
 // which is done from its column on the drive's page.
 const PhaseRoll = ({ d, p, send, back }: { d: Drive; p: Phase; send: Send; back: () => void }) => (
   <RollCall d={d} home={back} people={eligible(d, p.id)} roll={p.roll} badge={`${shortOf(d, p)} attendance`} send={send}
-    earlier={missed(d).filter(m => gates(d, phasesOf(d).findIndex(x => x.id === p.id)).some(g => g.id === m.k))}
+    earlier={missed(d).filter(m => feeds(d, phasesOf(d).findIndex(x => x.id === p.id)).some(g => g.id === m.k))}
     meta={<div className="pmeta"><span><Icon n="roll" s={14} />{titleOf(d, p)}</span><span><Icon n="clock" s={14} />{p.k === 'ppt' ? `Started ${tm(startOf(p))} · ends by ${tm(endOf(p))}` : Date.now() < startOf(p) ? `Goes live at ${tm(startOf(p))} · can be ended from then` : `Started ${tm(startOf(p))} · runs until you end it`}</span>{p.venue && <span><Icon n="pin" s={14} />{p.venue}</span>}</div>}
     mark={(id, absent, reason) => send({ type: 'phaseRoll', k: p.id, id, absent, reason })} start={() => send({ type: 'phaseRoll', k: p.id })}
     intro={`${eligible(d, p.id).length} eligible students.`}

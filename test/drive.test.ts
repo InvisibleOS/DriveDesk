@@ -1,7 +1,7 @@
 // npm test — onboarding, CSV import, the call → finish → result flow, ending a drive, and old saves upgrading
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { absentAt, alsoIn, apply, missed, forecast, fits, migrate, upNext, newDrive, parseStudents, planDrive, roundOpen, statusLabel, summary, toTable, lead, refuse, runs, phaseStates, eligible, waiting, placedAll, titleOf, phasesOf, type Action, type DriveConfig } from '../lib/drive.ts';
+import { absentAt, alsoIn, apply, missed, unlisted, forecast, fits, migrate, upNext, newDrive, parseStudents, planDrive, roundOpen, statusLabel, summary, toTable, lead, refuse, runs, phaseStates, eligible, waiting, placedAll, titleOf, phasesOf, prevOf, fromPrev, type Action, type DriveConfig } from '../lib/drive.ts';
 
 const cfg = (over: Partial<DriveConfig> = {}): DriveConfig => ({
   company: 'Optum', date: '2026-10-23', location: 'J Block Interview Cabins', rounds: ['Tech', 'HR', 'Final'],
@@ -134,6 +134,8 @@ test('a phase goes live at its start time and is done once it ends or the next o
   assert.deepEqual(phaseStates(d, at('2026-11-01T12:00')), ['Done', 'Upcoming', 'Upcoming'], 'a talk ends two hours after it starts');
   assert.deepEqual(phaseStates(d, at('2026-11-02T08:00')), ['Done', 'Today', 'Upcoming']);
   assert.deepEqual(phaseStates(d, at('2026-11-02T14:00')), ['Done', 'Live', 'Upcoming'], 'an OA goes live at its time too');
+  assert.throws(() => apply(d, { type: 'phaseRoll', k: 'oa' }, at('2026-11-01T11:00')), /Choose who takes the OA first/, 'its students are chosen first');
+  apply(d, { type: 'shortlist', k: 'oa', regs: null });
   assert.throws(() => apply(d, { type: 'phaseRoll', k: 'oa' }, at('2026-11-01T11:00')), /End the PPT first/, 'not while the PPT runs');
   apply(d, { type: 'phaseRoll', k: 'oa' }, at('2026-11-02T13:00'));
   assert.deepEqual(phaseStates(d, at('2026-11-02T13:01')), ['Done', 'Today', 'Upcoming'], 'its attendance can be taken early, but it is live only from its time');
@@ -173,6 +175,7 @@ test('only students present at the earlier phases go on, unless made eligible', 
   assert.deepEqual(eligible(d, 'oa').map(s => s.name), ['Asha']);
   apply(d, { type: 'excuse', k: 'ppt', id: c.id });
   assert.deepEqual(eligible(d, 'oa').map(s => s.name), ['Asha', 'Cy'], 'made eligible');
+  apply(d, { type: 'shortlist', k: 'oa', regs: null });
   assert.throws(() => apply(d, { type: 'phaseRoll', k: 'oa', id: b.id, absent: true }, at('2026-11-02T14:10')), /Student not found/, 'not eligible, not on the roll');
   apply(d, { type: 'phaseRoll', k: 'oa', id: c.id, absent: true }, at('2026-11-02T14:10'));
   apply(d, { type: 'phaseRoll', k: 'oa', id: c.id, reason: 'late' }, at('2026-11-02T19:00')); apply(d, { type: 'phaseRoll', k: 'oa', id: c.id, absent: true }, at('2026-11-02T19:01'));
@@ -310,6 +313,12 @@ test('one result for several: only those still awaiting one', () => {
   apply(d, { type: 'results', ids: [a.id, b.id], pass: true });
   apply(d, { type: 'results', ids: [c.id], pass: false });
   assert.deepEqual([a, b, c].map(s => s.status), ['rejected', 'waiting', 'rejected']);
+  // ⋯ › Unreject on the Rejected list: back to awaiting the same round's result, in their place (since leaving the cabin)
+  apply(d, { type: 'unreject', id: a.id }, Date.now() + 60000);
+  assert.deepEqual([a.status, a.done, a.t], ['pending', 1, a.hist[0].out]);
+  assert.throws(() => apply(d, { type: 'unreject', id: b.id }), /not rejected/);
+  apply(d, { type: 'results', ids: [a.id], pass: true });
+  assert.deepEqual([a.status, a.done], ['waiting', 1]);
 });
 
 test('interviews-only: attendance before their time, live with the first call, and they stay once begun', () => {
@@ -320,6 +329,8 @@ test('interviews-only: attendance before their time, live with the first call, a
   apply(d, { type: 'plan', plan: { kind: 'P', phases: [ppt, ...d.phases!] } }, at('2026-11-05T10:00'));
   assert.equal(d.phases!.length, 2, 'past their set time, phases can still be added');
   apply(d, { type: 'plan', plan: { kind: 'P', phases: d.phases!.slice(1) } }, at('2026-11-02T10:00'));
+  assert.throws(() => apply(d, { type: 'start' }, at('2026-11-04T08:30')), /Choose who takes the interviews first/);
+  apply(d, { type: 'shortlist', k: 'int', regs: null });
   apply(d, { type: 'start' }, at('2026-11-04T08:30'));
   assert.throws(() => apply(d, { type: 'plan', plan: { kind: 'P', phases: [ppt, ...d.phases!] } }), /no more phases/, 'not once their attendance has opened');
   apply(d, { type: 'attendance' }, at('2026-11-04T08:35'));
@@ -360,17 +371,20 @@ test('several OAs, names, shortlists, and phases side by side', () => {
   apply(d, { type: 'endPhase', k: 'ppt' }, at('2026-11-01T11:00'));
   assert.equal(apply(d, { type: 'shortlist', k: 'oa', regs: ['230905001', '230905004', '999999999'] }), '2 students shortlisted for the OA 1');
   assert.deepEqual(eligible(d, 'oa').map(s => s.name), ['S0'], 'only the shortlisted, and never anyone absent at the PPT');
-  assert.deepEqual(eligible(d, 'oa2').map(s => s.name), ['S0'], 'one after another: the next OA takes those on the earlier shortlist');
-  apply(d, { type: 'plan', plan: { kind: 'P', together: true, phases: phasesOf(d) } }, at('2026-11-01T12:00'));
+  apply(d, { type: 'shortlist', k: 'oa2', regs: null });
+  assert.deepEqual(eligible(d, 'oa2').map(s => s.name), ['S0', 'S1', 'S2'], 'at the same time as the OA 1: from the PPT, so everyone present at it');
   apply(d, { type: 'shortlist', k: 'oa2', regs: ['230905002'] });
   apply(d, { type: 'shortlist', k: 'int', regs: ['230905003'] });
-  assert.deepEqual(['oa', 'oa2', 'int'].map(k => eligible(d, k).map(s => s.name)), [['S0'], ['S1'], ['S2']], 'side by side: each its own shortlist');
+  assert.deepEqual(['oa', 'oa2', 'int'].map(k => eligible(d, k).map(s => s.name)), [['S0'], ['S1'], ['S2']], 'each its own shortlist, side by side');
   apply(d, { type: 'phaseRoll', k: 'oa' }, at('2026-11-02T10:01'));
   apply(d, { type: 'phaseRoll', k: 'oa2' }, at('2026-11-02T10:01'));
   assert.deepEqual(phaseStates(d, at('2026-11-02T10:30')), ['Done', 'Live', 'Live', 'Today'], 'both OAs live at once');
   assert.throws(() => apply(d, { type: 'shortlist', k: 'oa', regs: ['230905002'] }), /has begun/, 'fixed once its attendance starts');
   apply(d, { type: 'setup', config: cfg({ company: 'Opus', date: '2026-11-02' }) });
   assert.deepEqual(d.students.map(s => s.name), ['S2'], 'the interviews take their own shortlist, whatever the OAs did');
+  assert.deepEqual(unlisted(d).map(s => s.name), ['S0', 'S1'], 'not eligible: off the shortlist, but not absent at the PPT');
+  apply(d, { type: 'addStudents', rows: [b] });
+  assert.deepEqual([d.students.map(s => s.name), unlisted(d).map(s => s.name)], [['S2', 'S1'], ['S0']], 'made eligible, they join the interviews');
   void [a, b, c];
 });
 
@@ -380,4 +394,20 @@ test('seniors edit a drive\'s name and type of offer', () => {
   assert.deepEqual([d.company, d.kind], ['Optum Global', 'I']);
   assert.throws(() => apply(d, { type: 'details', company: ' ', kind: 'I' }), /company name/);
   assert.match(refuse(d, { user: 'riddhi', name: 'Riddhi', role: 'junior' }, { type: 'details', company: 'X', kind: 'P' }), /senior members/);
+});
+
+test('"from the previous phase" follows the times: phases at the same time run alongside', () => {
+  const ph = (k: 'ppt' | 'oa' | 'int', t: string) => ({ id: '', k, venue: '', at: t, crew: [] });
+  const students = ['230905001', '230905002', '230905003'].map((reg, i) => ({ reg, name: `S${i}`, campus: 'BLR' as const }));
+  const d = planDrive({ company: 'Opus', plan: { kind: 'P', students, phases: [ph('ppt', '2026-11-01T10:00'), ph('oa', '2026-11-02T11:00'), ph('oa', '2026-11-02T11:00'), ph('int', '2026-11-03T10:00')] } }, 'o');
+  assert.deepEqual([1, 2, 3].map(i => prevOf(d, i)), [0, 0, 2], 'both OAs at 11:00 take from the PPT; the interviews from the latest OA before them');
+  apply(d, { type: 'phaseRoll', k: 'ppt' }, Date.parse('2026-11-01T10:05'));
+  apply(d, { type: 'phaseRoll', k: 'ppt', id: d.pool![2].id, absent: true }, Date.parse('2026-11-01T10:06'));
+  apply(d, { type: 'endPhase', k: 'ppt' }, Date.parse('2026-11-01T11:00'));
+  apply(d, { type: 'shortlist', k: 'oa2', regs: null });
+  assert.equal(fromPrev(d, d.phases![2]), 'those present at the PPT');
+  assert.deepEqual(eligible(d, 'oa2').map(s => s.name), ['S0', 'S1'], 'everyone present at the PPT');
+  apply(d, { type: 'shortlist', k: 'oa', regs: null });
+  apply(d, { type: 'phaseRoll', k: 'oa' }, Date.parse('2026-11-02T10:00'));
+  apply(d, { type: 'phaseRoll', k: 'oa2' }, Date.parse('2026-11-02T10:00')); // doesn't wait for the OA 1
 });

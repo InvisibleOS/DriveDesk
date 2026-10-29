@@ -1,6 +1,6 @@
 'use client';
 import { useId, useState } from 'react';
-import { shortOf, absentAt, missed, venuesOf, doneLabel, eligible, parseStudents, rname, statusLabel, toTable, type Campus, type Drive, type Phase, type Placed, type Row, type Status } from '@/lib/drive';
+import { shortOf, absentAt, missed, unlisted, venuesOf, doneLabel, eligible, parseStudents, rname, statusLabel, toTable, type Campus, type Drive, type Phase, type Placed, type Pupil, type Row, type Status } from '@/lib/drive';
 import { Camp } from './board';
 import { AlsoIn, Field, Icon, More, Stat, download, tm, toast, type Seen, type Send } from './ui';
 
@@ -15,15 +15,23 @@ export const Venue = ({ value, onSave, options }: { value: string; onSave: (v: s
   </>;
 };
 
-// The students with one status (opened from the numbers in a drive's header). Read-only, except on the Absent list:
-// the reason can be written there, and ⋯ › Mark as present puts a late arrival back in their round's queue.
-export function Students({ d, status, send, also }: { d: Drive; status: Status | 'present'; send: Send; also?: Seen }) {
+// The students with one status (opened from the numbers in a drive's header). Read-only, except: on the Absent list the
+// reason can be written, and ⋯ › Mark as present puts a late arrival back in their round's queue; on the Present list,
+// ⋯ › Mark absent takes someone waiting to be called out of the queue; on Not eligible (left off a shortlist), ⋯ › Make
+// eligible adds them to the interviews, at the back of the first round's queue; on Rejected, ⋯ › Unreject (on hover)
+// puts a wrong rejection back to awaiting that round's result, in their old place in the queue, where ✓ / ✗ is given again.
+export function Students({ d, status, send, also }: { d: Drive; status: Status | 'present' | 'out'; send: Send; also?: Seen }) {
   const [q, setQ] = useState('');
   const [c, setC] = useState<'all' | Campus>('all');
   const journey = status === 'present' || status === 'in' || status === 'pending'; // not shown for absent, selected or rejected
-  const rows = d.students.map((s, i) => ({ s, i })).filter(({ s }) =>
+  const mark = status === 'present' && d.status === 'live'; // a column for ⋯ › Mark absent, always in view
+  const unrej = status === 'rejected' && d.status === 'live'; // an ended drive shows no board to give the result again
+  // Rejected reads in the order they were rejected (t: their last change), numbered that way whatever the search
+  const order = status === 'rejected' ? d.students.filter(s => s.status === 'rejected').sort((a, b) => a.t - b.t) : d.students;
+  const rows = order.map((s, i) => ({ s, i })).filter(({ s }) =>
     (status === 'present' ? s.status !== 'absent' : s.status === status) && (!q || `${s.reg} ${s.name}`.toLowerCase().includes(q.toLowerCase())) && (c === 'all' || s.campus === c));
-  const away = status === 'absent' ? missed(d).filter(({ s }) => (!q || `${s.reg} ${s.name}`.toLowerCase().includes(q.toLowerCase())) && (c === 'all' || s.campus === c)) : [];
+  const hit = (s: Pupil) => (!q || `${s.reg} ${s.name}`.toLowerCase().includes(q.toLowerCase())) && (c === 'all' || s.campus === c);
+  const away = status === 'absent' ? missed(d).filter(({ s }) => hit(s)) : [], left = status === 'out' ? unlisted(d).filter(hit) : [];
   return (
     <div className="panel">
       <div className="panel-bar">
@@ -32,11 +40,11 @@ export function Students({ d, status, send, also }: { d: Drive; status: Status |
           <option value="all">All campuses</option>
           <option value="BLR">BLR</option><option value="MPL">MPL</option>
         </select>
-        <span className="meta">{rows.length + away.length} shown</span>
+        <span className="meta">{rows.length + away.length + left.length} shown</span>
       </div>
       <div className="scroll">
         <table>
-          <thead><tr><th>#</th><th>Reg. no.</th><th>Name</th><th>Campus</th>{status === 'absent' ? <><th>Absent at</th><th>Reason</th></> : <th>Rounds finished</th>}{journey && <th>Journey (in–out)</th>}</tr></thead>
+          <thead><tr><th>#</th><th>Reg. no.</th><th>Name</th><th>Campus</th>{status === 'absent' ? <><th>Absent at</th><th>Reason</th></> : status === 'out' ? <th /> : <th>Rounds finished</th>}{journey && <th>Journey (in–out)</th>}{(mark || unrej) && <th />}</tr></thead>
           <tbody>
             {rows.map(({ s, i }) => (
               <tr key={s.id}>
@@ -50,6 +58,8 @@ export function Students({ d, status, send, also }: { d: Drive; status: Status |
                   <More className="icon sm ghost" label={`More for ${s.name}`} items={[[<><Icon n="check" />Mark as present</>, () => send({ type: 'move', id: s.id, to: 'waiting' })]]} />
                 </div></td>}
                 {journey && <td>{s.hist.map((h, j) => <span key={j} className="j">{rname(d, h.r)} · {h.room} {tm(h.in || h.call)}{h.out ? '–' + tm(h.out) : ''} {h.res ? RES_ICON[h.res] : ''}</span>)}</td>}
+                {mark && <td className="act">{s.status === 'waiting' && <More className="icon sm ghost" label={`More for ${s.name}`} items={[[<><Icon n="x" />Mark absent</>, () => send({ type: 'move', id: s.id, to: 'absent' })]]} />}</td>}
+                {unrej && <td className="act hov"><More className="icon sm ghost" label={`More for ${s.name}`} items={[[<><Icon n="undo" />Unreject</>, () => send({ type: 'unreject', id: s.id })]]} /></td>}
               </tr>
             ))}
             {/* missed a PPT or OA, so never on the interviews' list: making them eligible adds them there */}
@@ -65,7 +75,16 @@ export function Students({ d, status, send, also }: { d: Drive; status: Status |
                 </div></td>
               </tr>
             ))}
-            {!rows.length && !away.length && <tr><td colSpan={7} className="empty">No students</td></tr>}
+            {left.map((s, i) => (
+              <tr key={s.id}>
+                <td className="num">{i + 1}</td>
+                <td className="reg">{s.reg}</td>
+                <td className="name">{s.name}</td>
+                <td><Camp c={s.campus} /></td>
+                <td className="act">{d.status === 'live' && <More className="icon sm ghost" label={`More for ${s.name}`} items={[[<><Icon n="check" />Make eligible</>, () => send({ type: 'addStudents', rows: [s] })]]} />}</td>
+              </tr>
+            ))}
+            {!rows.length && !away.length && !left.length && <tr><td colSpan={7} className="empty">No students</td></tr>}
           </tbody>
         </table>
       </div>
