@@ -1,0 +1,10 @@
+node_modules
+.next
+data
+next-env.d.ts
+.next-preview
+.next-desktop
+dist
+tsconfig.tsbuildinfo
+.DS_Store
+build/release-notes.md
